@@ -323,6 +323,11 @@ type RelayConnection struct {
 	closed  bool
 }
 
+// RelayId 获取中继连接ID
+func (rc *RelayConnection) RelayId() string {
+	return rc.relayId
+}
+
 // Send 通过中继发送数据
 func (rc *RelayConnection) Send(data []byte) error {
 	// 检查连接是否已关闭

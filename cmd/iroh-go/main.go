@@ -18,7 +18,7 @@ func main() {
 	// 创建端点
 	builder := endpoint.NewBuilder()
 	builder.RelayMode(endpoint.RelayModeDefault)
-	builder.ALPNs([][]byte{[]byte("/iroh/echo/1")})
+	builder.ALPNs([][]byte{[]byte("h3")})
 
 	endp, err := builder.Build()
 	if err != nil {
@@ -65,7 +65,7 @@ func main() {
 
 	// 注册Echo协议处理器
 	echoHandler := protocol.NewEchoHandler()
-	router.Accept("/iroh/echo/1", echoHandler)
+	router.Accept("h3", echoHandler)
 
 	// 注册HTTP/3协议处理器
 	http3Handler := protocol.NewHttp3Handler()

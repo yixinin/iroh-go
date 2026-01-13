@@ -41,7 +41,7 @@ type ConnectionState struct {
 	conn      interface{}
 	paths     map[PathId]Addr
 	openPaths []Addr
-	pathIds   map[Addr]PathId
+	pathIds   map[string]PathId
 	mu        sync.RWMutex
 }
 
@@ -169,7 +169,7 @@ func (rsa *RemoteStateActor) checkConnections() {
 		conn.mu.RLock()
 		hasNonRelayPath := false
 		for _, addr := range conn.openPaths {
-			if addr.Type == TransportTypeIp {
+			if addr.IsIP() {
 				hasNonRelayPath = true
 				break
 			}
@@ -216,7 +216,7 @@ func (rsa *RemoteStateActor) shouldHolepunchPath(path *Addr) bool {
 		return false
 	}
 
-	if path.Type == TransportTypeRelay {
+	if path.IsRelay() {
 		return false
 	}
 
@@ -284,7 +284,7 @@ func (rsa *RemoteStateActor) AddConnection(conn interface{}, connId uint64) {
 		conn:      conn,
 		paths:     make(map[PathId]Addr),
 		openPaths: make([]Addr, 0),
-		pathIds:   make(map[Addr]PathId),
+		pathIds:   make(map[string]PathId),
 	}
 	rsa.connections[connId] = connState
 
@@ -312,7 +312,7 @@ func (rsa *RemoteStateActor) AddPath(connId uint64, pathId PathId, addr Addr) {
 
 	conn.paths[pathId] = addr
 	conn.openPaths = append(conn.openPaths, addr)
-	conn.pathIds[addr] = pathId
+	conn.pathIds[addr.String()] = pathId
 
 	rsa.selectBestPath()
 }
@@ -335,7 +335,7 @@ func (rsa *RemoteStateActor) RemovePath(connId uint64, pathId PathId) {
 	}
 
 	delete(conn.paths, pathId)
-	delete(conn.pathIds, addr)
+	delete(conn.pathIds, addr.String())
 
 	for i, a := range conn.openPaths {
 		if a.Equals(&addr) {
@@ -379,10 +379,9 @@ func (rsa *RemoteStateActor) selectBestPath() {
 func (rsa *RemoteStateActor) scorePath(addr *Addr) float64 {
 	score := 0.0
 
-	switch addr.Type {
-	case TransportTypeIp:
+	if addr.IsIP() {
 		score += 100.0
-	case TransportTypeRelay:
+	} else if addr.IsRelay() {
 		score += 10.0
 	}
 
@@ -409,7 +408,7 @@ type RemoteStateInfo struct {
 }
 
 type RemotePathState struct {
-	paths map[Addr]*PathInfo
+	paths map[string]*PathInfo
 	mu    sync.RWMutex
 }
 
@@ -430,7 +429,7 @@ const (
 
 func NewRemotePathState() *RemotePathState {
 	return &RemotePathState{
-		paths: make(map[Addr]*PathInfo),
+		paths: make(map[string]*PathInfo),
 	}
 }
 
@@ -438,8 +437,9 @@ func (rps *RemotePathState) AddPath(addr *Addr) {
 	rps.mu.Lock()
 	defer rps.mu.Unlock()
 
-	if _, ok := rps.paths[*addr]; !ok {
-		rps.paths[*addr] = &PathInfo{
+	addrStr := addr.String()
+	if _, ok := rps.paths[addrStr]; !ok {
+		rps.paths[addrStr] = &PathInfo{
 			Addr:     *addr,
 			Status:   PathStatusAvailable,
 			LastUsed: time.Now(),
@@ -451,14 +451,16 @@ func (rps *RemotePathState) RemovePath(addr *Addr) {
 	rps.mu.Lock()
 	defer rps.mu.Unlock()
 
-	delete(rps.paths, *addr)
+	addrStr := addr.String()
+	delete(rps.paths, addrStr)
 }
 
 func (rps *RemotePathState) GetPath(addr *Addr) *PathInfo {
 	rps.mu.RLock()
 	defer rps.mu.RUnlock()
 
-	return rps.paths[*addr]
+	addrStr := addr.String()
+	return rps.paths[addrStr]
 }
 
 func (rps *RemotePathState) GetCandidatePaths() []Addr {
@@ -466,9 +468,9 @@ func (rps *RemotePathState) GetCandidatePaths() []Addr {
 	defer rps.mu.RUnlock()
 
 	paths := make([]Addr, 0, len(rps.paths))
-	for addr, info := range rps.paths {
+	for _, info := range rps.paths {
 		if info.Status == PathStatusAvailable {
-			paths = append(paths, addr)
+			paths = append(paths, info.Addr)
 		}
 	}
 
@@ -480,8 +482,8 @@ func (rps *RemotePathState) GetAddresses() []string {
 	defer rps.mu.RUnlock()
 
 	addrs := make([]string, 0, len(rps.paths))
-	for addr := range rps.paths {
-		addrs = append(addrs, addr.String())
+	for _, info := range rps.paths {
+		addrs = append(addrs, info.Addr.String())
 	}
 
 	return addrs
@@ -494,11 +496,11 @@ func (rps *RemotePathState) IsEmpty() bool {
 	return len(rps.paths) == 0
 }
 
-func (rps *RemotePathState) GetPaths() map[Addr]*PathInfo {
+func (rps *RemotePathState) GetPaths() map[string]*PathInfo {
 	rps.mu.RLock()
 	defer rps.mu.RUnlock()
 
-	result := make(map[Addr]*PathInfo, len(rps.paths))
+	result := make(map[string]*PathInfo, len(rps.paths))
 	for k, v := range rps.paths {
 		result[k] = v
 	}

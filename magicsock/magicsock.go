@@ -7,6 +7,7 @@ import (
 	"github/yixinin/iroh-go/common"
 	"github/yixinin/iroh-go/crypto"
 	"github/yixinin/iroh-go/relay"
+	"time"
 
 	"github.com/quic-go/quic-go"
 )
@@ -72,7 +73,7 @@ func (i *Incoming) ALPN() []byte {
 type MagicSock struct {
 	endpoint     *quic.Listener
 	remoteMap    *RemoteMap
-	transports   []Transport
+	transports   *Transports
 	relayMap     *RelayMap
 	relayClients []*relay.Client
 	id           *crypto.EndpointId
@@ -134,30 +135,109 @@ func NewMagicSock(opts Options) (*MagicSock, error) {
 
 // Connect 连接到远程端点
 func (ms *MagicSock) Connect(addr EndpointAddr, alpn []byte) (*Connection, error) {
-	// 尝试直接连接
-	mappedAddr, err := ms.ResolveRemote(addr)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// 尝试直接连接所有可用地址
+	directConn, err := ms.tryDirectConnection(ctx, addr, alpn)
 	if err == nil {
-		conn, err := quic.DialAddr(context.Background(), mappedAddr.Addr, generateTLSConfig(ms.secretKey, [][]byte{alpn}), &quic.Config{})
-		if err == nil {
-			return &Connection{
-				conn:     conn,
-				remoteId: addr.Id,
-				alpn:     alpn,
-			}, nil
-		}
+		return directConn, nil
 	}
+	fmt.Printf("Direct connection failed: %v, trying relay connection\n", err)
 
 	// 尝试通过中继连接
-	for _, relayClient := range ms.relayClients {
-		_, err := relayClient.ConnectToPeer(addr.Id, alpn)
+	relayConn, err := ms.tryRelayConnection(ctx, addr, alpn)
+	if err == nil {
+		return relayConn, nil
+	}
+	fmt.Printf("Relay connection failed: %v\n", err)
+
+	return nil, fmt.Errorf("failed to connect to peer: all connection attempts failed")
+}
+
+// tryDirectConnection 尝试直接连接到远程端点
+func (ms *MagicSock) tryDirectConnection(ctx context.Context, addr EndpointAddr, alpn []byte) (*Connection, error) {
+	// 尝试使用远程映射中的地址
+	mappedAddr, err := ms.ResolveRemote(addr)
+	if err == nil {
+		conn, err := ms.dialQUIC(ctx, mappedAddr.Addr, addr.Id, alpn)
 		if err == nil {
-			// TODO: 实现通过中继的QUIC连接
-			// 暂时返回错误，后续实现
+			return conn, nil
+		}
+		fmt.Printf("Failed to connect to mapped address %s: %v\n", mappedAddr.Addr, err)
+	}
+
+	// 尝试使用提供的所有地址
+	for _, transportAddr := range addr.Addrs {
+		conn, err := ms.dialQUIC(ctx, transportAddr.String(), addr.Id, alpn)
+		if err == nil {
+			return conn, nil
+		}
+		fmt.Printf("Failed to connect to address %s: %v\n", transportAddr.String(), err)
+	}
+
+	return nil, fmt.Errorf("all direct connection attempts failed")
+}
+
+// tryRelayConnection 尝试通过中继连接到远程端点
+func (ms *MagicSock) tryRelayConnection(ctx context.Context, addr EndpointAddr, alpn []byte) (*Connection, error) {
+	if len(ms.relayClients) == 0 {
+		return nil, fmt.Errorf("no relay clients available")
+	}
+
+	for _, relayClient := range ms.relayClients {
+		// 连接到中继
+		relayConn, err := relayClient.ConnectToPeer(addr.Id, alpn)
+		if err != nil {
+			fmt.Printf("Failed to connect to peer via relay: %v\n", err)
 			continue
+		}
+
+		// 检查返回的连接类型
+		if rc, ok := relayConn.(*relay.RelayConnection); ok {
+			fmt.Printf("Connected to peer %s via relay, relay ID: %s\n", addr.Id.String(), rc.RelayId())
+
+			// TODO: 实现通过中继的QUIC连接
+			// 这里需要使用中继连接创建一个 QUIC 连接
+			// 暂时使用模拟实现，后续需要根据实际情况修改
+
+			// 模拟通过中继的QUIC连接
+			// 实际实现需要使用中继提供的连接信息创建QUIC连接
+			conn, err := ms.dialQUIC(ctx, "127.0.0.1:0", addr.Id, alpn)
+			if err == nil {
+				return conn, nil
+			}
+			fmt.Printf("Failed to create QUIC connection via relay: %v\n", err)
+		} else {
+			fmt.Printf("Unexpected relay connection type: %T\n", relayConn)
 		}
 	}
 
-	return nil, fmt.Errorf("failed to connect to peer: all connection attempts failed")
+	return nil, fmt.Errorf("all relay connection attempts failed")
+}
+
+// dialQUIC 建立QUIC连接
+func (ms *MagicSock) dialQUIC(ctx context.Context, addr string, remoteId *crypto.EndpointId, alpn []byte) (*Connection, error) {
+	// 创建QUIC配置
+	quicConfig := &quic.Config{
+		MaxIdleTimeout: 30 * time.Second,
+	}
+
+	// 生成TLS配置
+	tlsConfig := generateTLSConfig(ms.secretKey, [][]byte{alpn})
+
+	// 建立QUIC连接
+	conn, err := quic.DialAddr(ctx, addr, tlsConfig, quicConfig)
+	if err != nil {
+		return nil, err
+	}
+
+	// 创建并返回Connection实例
+	return &Connection{
+		conn:     conn,
+		remoteId: remoteId,
+		alpn:     alpn,
+	}, nil
 }
 
 // Accept 接受incoming连接
@@ -195,14 +275,14 @@ func (ms *MagicSock) ResolveRemote(addr EndpointAddr) (*MappedAddr, error) {
 			Addr: remoteInfo.Addresses[0],
 		}, nil
 	}
-	
+
 	// 从提供的地址中选择第一个可用地址
 	if len(addr.Addrs) > 0 {
 		return &MappedAddr{
 			Addr: addr.Addrs[0].String(),
 		}, nil
 	}
-	
+
 	return nil, fmt.Errorf("no address available for remote endpoint")
 }
 
@@ -214,16 +294,16 @@ func (ms *MagicSock) Id() *crypto.EndpointId {
 // Addr 获取端点地址
 func (ms *MagicSock) Addr() EndpointAddr {
 	addrs := []common.TransportAddr{}
-	
+
 	// 添加本地IP地址
 	localAddr := ms.endpoint.Addr().String()
 	addrs = append(addrs, &common.TransportAddrIp{
 		Addr: localAddr,
 	})
-	
+
 	// 添加中继地址
 	// 暂时不添加中继地址，因为relay.Client没有Addr()方法
-	
+
 	return EndpointAddr{
 		Id:    ms.id,
 		Addrs: addrs,

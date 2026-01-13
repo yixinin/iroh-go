@@ -187,10 +187,23 @@ func (ms *MagicSock) Accept() (<-chan *Incoming, error) {
 
 // ResolveRemote 解析远程端点地址
 func (ms *MagicSock) ResolveRemote(addr EndpointAddr) (*MappedAddr, error) {
-	// TODO: 实现地址解析逻辑
-	return &MappedAddr{
-		Addr: "127.0.0.1:0", // 临时返回
-	}, nil
+	// 从远程映射中获取节点信息
+	remoteInfo, ok := ms.remoteMap.Get(addr.Id)
+	if ok && len(remoteInfo.Addresses) > 0 {
+		// 返回第一个可用地址
+		return &MappedAddr{
+			Addr: remoteInfo.Addresses[0],
+		}, nil
+	}
+	
+	// 从提供的地址中选择第一个可用地址
+	if len(addr.Addrs) > 0 {
+		return &MappedAddr{
+			Addr: addr.Addrs[0].String(),
+		}, nil
+	}
+	
+	return nil, fmt.Errorf("no address available for remote endpoint")
 }
 
 // Id 获取端点ID
@@ -200,10 +213,20 @@ func (ms *MagicSock) Id() *crypto.EndpointId {
 
 // Addr 获取端点地址
 func (ms *MagicSock) Addr() EndpointAddr {
-	// TODO: 实现地址获取逻辑
+	addrs := []common.TransportAddr{}
+	
+	// 添加本地IP地址
+	localAddr := ms.endpoint.Addr().String()
+	addrs = append(addrs, &common.TransportAddrIp{
+		Addr: localAddr,
+	})
+	
+	// 添加中继地址
+	// 暂时不添加中继地址，因为relay.Client没有Addr()方法
+	
 	return EndpointAddr{
 		Id:    ms.id,
-		Addrs: []common.TransportAddr{},
+		Addrs: addrs,
 	}
 }
 

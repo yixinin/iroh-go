@@ -55,12 +55,27 @@ func main() {
 		log.Println("Added PKARR discovery service")
 	}
 
+	// 添加DNS发现服务
+	dnsDiscovery := discovery.NewDnsDiscovery()
+	discoveryService.Add(dnsDiscovery)
+	log.Println("Added DNS discovery service")
+
 	// 创建协议路由器
 	router := protocol.NewRouter(endp)
 
 	// 注册Echo协议处理器
 	echoHandler := protocol.NewEchoHandler()
-	router.Accept("http/3", echoHandler)
+	router.Accept("/iroh/echo/1", echoHandler)
+
+	// 注册HTTP/3协议处理器
+	http3Handler := protocol.NewHttp3Handler()
+	// 注册HTTP/3路由
+	http3Handler.HandleFunc("/hello", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("Hello from HTTP/3!"))
+	})
+	router.Accept("h3", http3Handler)
 
 	// 启动路由器
 	if err := router.Spawn(); err != nil {
@@ -80,24 +95,21 @@ func main() {
 	}
 
 	// 发现其他端点
-	// 暂时注释掉，先测试发布功能
-	/*
-		go func() {
-			// 这里可以传入特定的endpoint ID来发现特定端点
-			// 现在我们传入nil来发现所有端点
-			discoveryCh, err := discoveryService.Discover(nil)
-			if err != nil {
-				log.Printf("Failed to start discovery: %v", err)
-				return
-			}
+	go func() {
+		// 这里可以传入特定的endpoint ID来发现特定端点
+		// 现在我们传入nil来发现所有端点
+		discoveryCh, err := discoveryService.Discover(nil)
+		if err != nil {
+			log.Printf("Failed to start discovery: %v", err)
+			return
+		}
 
-			for discoveredEndpoint := range discoveryCh {
-				log.Printf("Discovered endpoint: %s", discoveredEndpoint.Id.String())
-				log.Printf("  Relay URL: %s", discoveredEndpoint.RelayURL)
-				log.Printf("  Addresses: %v", discoveredEndpoint.Addrs)
-			}
-		}()
-	*/
+		for discoveredEndpoint := range discoveryCh {
+			log.Printf("Discovered endpoint: %s", discoveredEndpoint.Id.String())
+			log.Printf("  Relay URL: %s", discoveredEndpoint.RelayURL)
+			log.Printf("  Addresses: %v", discoveredEndpoint.Addrs)
+		}
+	}()
 
 	// 创建Gin路由器
 	ginRouter := gin.Default()

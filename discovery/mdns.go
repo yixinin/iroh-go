@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"time"
 
 	"github.com/grandcat/zeroconf"
 
@@ -20,6 +21,8 @@ type MdnsDiscovery struct {
 	publisher  *zeroconf.Server
 	resolver   *zeroconf.Resolver
 	discovered map[string]*common.EndpointData
+	cacheTTL   time.Duration
+	cacheExpiry map[string]time.Time
 }
 
 // NewMdnsDiscovery 创建新的mDNS发现服务
@@ -33,10 +36,12 @@ func NewMdnsDiscovery() (*MdnsDiscovery, error) {
 	}
 
 	return &MdnsDiscovery{
-		ctx:        ctx,
-		cancel:     cancel,
-		resolver:   resolver,
-		discovered: make(map[string]*common.EndpointData),
+		ctx:         ctx,
+		cancel:      cancel,
+		resolver:    resolver,
+		discovered:  make(map[string]*common.EndpointData),
+		cacheTTL:    5 * time.Minute,
+		cacheExpiry: make(map[string]time.Time),
 	}, nil
 }
 
@@ -92,6 +97,20 @@ func (d *MdnsDiscovery) Discover(id *crypto.EndpointId) (<-chan *common.Endpoint
 
 	go func() {
 		defer close(ch)
+
+		// 定期清理过期缓存
+		go func() {
+			ticker := time.NewTicker(30 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ticker.C:
+					d.cleanExpiredCache()
+				case <-d.ctx.Done():
+					return
+				}
+			}
+		}()
 
 		// 搜索服务
 		entries := make(chan *zeroconf.ServiceEntry)
@@ -154,13 +173,16 @@ func (d *MdnsDiscovery) Discover(id *crypto.EndpointId) (<-chan *common.Endpoint
 				continue
 			}
 
-			// 检查是否已经发现过
-			if _, exists := d.discovered[data.Id.String()]; exists {
-				continue
+			// 检查是否已经发现过且未过期
+			if expiry, exists := d.cacheExpiry[data.Id.String()]; exists {
+				if time.Now().Before(expiry) {
+					continue
+				}
 			}
 
-			// 添加到已发现列表
+			// 更新缓存和过期时间
 			d.discovered[data.Id.String()] = data
+			d.cacheExpiry[data.Id.String()] = time.Now().Add(d.cacheTTL)
 
 			// 发送发现结果
 			ch <- data
@@ -169,6 +191,18 @@ func (d *MdnsDiscovery) Discover(id *crypto.EndpointId) (<-chan *common.Endpoint
 	}()
 
 	return ch, nil
+}
+
+// cleanExpiredCache 清理过期缓存
+func (d *MdnsDiscovery) cleanExpiredCache() {
+	now := time.Now()
+	for id, expiry := range d.cacheExpiry {
+		if now.After(expiry) {
+			delete(d.discovered, id)
+			delete(d.cacheExpiry, id)
+			log.Printf("Cleaned expired mDNS cache for endpoint: %s", id)
+		}
+	}
 }
 
 // Close 关闭发现服务

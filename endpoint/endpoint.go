@@ -21,9 +21,13 @@ type EndpointAddr struct {
 
 // Options 端点选项
 type Options struct {
-	RelayMode common.RelayMode
-	SecretKey *crypto.SecretKey
-	ALPNs     [][]byte
+	RelayMode            common.RelayMode
+	SecretKey            *crypto.SecretKey
+	ALPNs                [][]byte
+	RelayUrls            []string
+	DnsResolver          *net.Resolver
+	AddressFamilySelector func() bool
+	InsecureSkipCertVerify bool
 }
 
 // RelayMode 中继模式

@@ -1,8 +1,79 @@
 package magicsock
 
 import (
+	"fmt"
+	"net"
+
 	"github/yixinin/iroh-go/common"
+	"github/yixinin/iroh-go/crypto"
 )
+
+// Addr 传输地址
+type Addr struct {
+	Type  TransportType
+	Ip    *net.UDPAddr
+	Relay *RelayAddr
+}
+
+// RelayAddr 中继地址
+type RelayAddr struct {
+	Url    string
+	NodeId *crypto.EndpointId
+}
+
+// String 获取地址字符串
+func (a *Addr) String() string {
+	switch a.Type {
+	case TransportTypeIp:
+		if a.Ip != nil {
+			return a.Ip.String()
+		}
+	case TransportTypeRelay:
+		if a.Relay != nil {
+			return fmt.Sprintf("relay:%s@%s", a.Relay.NodeId.String(), a.Relay.Url)
+		}
+	}
+	return ""
+}
+
+// Equals 比较两个地址是否相等
+func (a *Addr) Equals(other *Addr) bool {
+	if a == nil || other == nil {
+		return a == other
+	}
+	if a.Type != other.Type {
+		return false
+	}
+	switch a.Type {
+	case TransportTypeIp:
+		if a.Ip == nil || other.Ip == nil {
+			return a.Ip == other.Ip
+		}
+		return a.Ip.String() == other.Ip.String()
+	case TransportTypeRelay:
+		if a.Relay == nil || other.Relay == nil {
+			return a.Relay == other.Relay
+		}
+		return a.Relay.Url == other.Relay.Url && a.Relay.NodeId.Equals(other.Relay.NodeId)
+	}
+	return false
+}
+
+// NewAddrFromIP 从IP地址创建Addr
+func NewAddrFromIP(ip *net.UDPAddr) *Addr {
+	return &Addr{
+		Type: TransportTypeIp,
+		Ip:   ip,
+	}
+}
+
+// NewAddrFromRelay 从中继地址创建Addr
+func NewAddrFromRelay(url string, nodeId *crypto.EndpointId) *Addr {
+	return &Addr{
+		Type:  TransportTypeRelay,
+		Relay: &RelayAddr{Url: url, NodeId: nodeId},
+	}
+}
 
 // Transport 传输接口
 type Transport interface {

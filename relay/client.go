@@ -3,6 +3,7 @@ package relay
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"sync"
@@ -15,15 +16,15 @@ import (
 
 // KeyCache 公钥缓存
 type KeyCache struct {
-	cache map[string]*crypto.PublicKey
-	mutex sync.RWMutex
+	cache    map[string]*crypto.PublicKey
+	mutex    sync.RWMutex
 	capacity int
 }
 
 // NewKeyCache 创建新的公钥缓存
 func NewKeyCache(capacity int) *KeyCache {
 	return &KeyCache{
-		cache: make(map[string]*crypto.PublicKey),
+		cache:    make(map[string]*crypto.PublicKey),
 		capacity: capacity,
 	}
 }
@@ -58,9 +59,11 @@ const (
 	// RelayPath 中继服务路径
 	RelayPath = "/relay"
 	// RelayProtocolVersion 中继协议版本
-	RelayProtocolVersion = "iroh/relay/0"
+	RelayProtocolVersion = "iroh-relay-v1"
 	// ClientAuthHeader 客户端认证头部
-	ClientAuthHeader = "X-Iroh-Client-Auth"
+	ClientAuthHeader = "x-iroh-relay-client-auth-v1"
+	// RelayProbePath 中继探测路径
+	RelayProbePath = "/ping"
 	// MaxFrameSize 最大帧大小
 	MaxFrameSize = 16384
 )
@@ -77,27 +80,27 @@ const (
 
 // ConnectRequest 连接请求消息
 type ConnectRequest struct {
-	MsgType  byte                `json:"msg_type"`
-	PeerId   string              `json:"peer_id"`
-	ALPN     []byte              `json:"alpn"`
-	ClientId string              `json:"client_id"`
+	MsgType  byte   `json:"msg_type"`
+	PeerId   string `json:"peer_id"`
+	ALPN     []byte `json:"alpn"`
+	ClientId string `json:"client_id"`
 }
 
 // ConnectResponse 连接响应消息
 type ConnectResponse struct {
-	MsgType    byte   `json:"msg_type"`
-	Status     uint8  `json:"status"`
-	RelayId    string `json:"relay_id,omitempty"`
-	Error      string `json:"error,omitempty"`
+	MsgType byte   `json:"msg_type"`
+	Status  uint8  `json:"status"`
+	RelayId string `json:"relay_id,omitempty"`
+	Error   string `json:"error,omitempty"`
 }
 
 // Client 中继客户端
 type Client struct {
-	conn       *websocket.Conn
-	config     *Config
-	url        string
-	localAddr  string
-	keyCache   *KeyCache
+	conn      *websocket.Conn
+	config    *Config
+	url       string
+	localAddr string
+	keyCache  *KeyCache
 }
 
 // NewClient 创建新的中继客户端
@@ -121,6 +124,8 @@ func (c *Client) Connect() error {
 		return err
 	}
 
+	log.Printf("[RelayClient] Connecting to relay: %s", dialURL)
+
 	// 验证 URL 格式
 	if _, err := url.Parse(dialURL); err != nil {
 		return fmt.Errorf("invalid relay URL: %w", err)
@@ -136,104 +141,132 @@ func (c *Client) Connect() error {
 
 	// 构建请求头
 	headers := http.Header{}
-	if c.config.SecretKey != nil {
-		// 实现 TLS 密钥导出用于客户端认证
-		// 这里使用简单的基于密钥的认证方式
-		authToken := c.generateAuthToken()
-		headers.Set(ClientAuthHeader, authToken)
-	}
+	log.Printf("[RelayClient] Headers: %v", headers)
+	log.Printf("[RelayClient] Subprotocols: %v", dialer.Subprotocols)
 
 	// 建立 WebSocket 连接
 	conn, resp, err := dialer.Dial(dialURL, headers)
 	if err != nil {
 		if resp != nil {
+			log.Printf("[RelayClient] Connection failed with status: %s", resp.Status)
+			log.Printf("[RelayClient] Response headers: %v", resp.Header)
 			return fmt.Errorf("failed to connect to relay: %w, status: %s", err, resp.Status)
 		}
+		log.Printf("[RelayClient] Connection failed: %v", err)
 		return fmt.Errorf("failed to connect to relay: %w", err)
 	}
 
 	// 检查响应状态
 	if resp.StatusCode != http.StatusSwitchingProtocols {
+		log.Printf("[RelayClient] Unexpected status code: %d (expected %d)", resp.StatusCode, http.StatusSwitchingProtocols)
 		return fmt.Errorf("unexpected upgrade status: %s", resp.Status)
 	}
+
+	log.Printf("[RelayClient] WebSocket connection established successfully")
 
 	// 获取本地地址
 	if localAddr := conn.LocalAddr(); localAddr != nil {
 		c.localAddr = localAddr.String()
+		log.Printf("[RelayClient] Local address: %s", c.localAddr)
 	}
+	c.conn = conn
 
 	// 执行握手过程
+	log.Printf("[RelayClient] Starting handshake")
 	if err := c.handshake(); err != nil {
 		conn.Close()
+		log.Printf("[RelayClient] Handshake failed: %v", err)
 		return fmt.Errorf("handshake failed: %w", err)
 	}
 
-	c.conn = conn
+	log.Printf("[RelayClient] Handshake completed successfully")
+
 	return nil
 }
 
 // handshake 执行与中继服务器的握手过程
 func (c *Client) handshake() error {
-	// 构建握手请求
-	handshakeReq := map[string]interface{}{
-		"type": "handshake",
+	log.Printf("[RelayClient] Waiting for server challenge")
+
+	// 接收服务器挑战
+	challengeData, err := c.Receive()
+	if err != nil {
+		return fmt.Errorf("failed to receive challenge: %w", err)
+	}
+
+	log.Printf("[RelayClient] Received challenge: %x", challengeData)
+
+	// 解析挑战
+	var challenge map[string]interface{}
+	if err := json.Unmarshal(challengeData, &challenge); err != nil {
+		return fmt.Errorf("failed to unmarshal challenge: %w", err)
+	}
+
+	// 检查挑战类型
+	challengeType, ok := challenge["type"].(string)
+	if !ok || challengeType != "challenge" {
+		return fmt.Errorf("invalid challenge type: %v", challengeType)
+	}
+
+	// 获取挑战数据
+	challengeBytes, ok := challenge["challenge"].(string)
+	if !ok {
+		return fmt.Errorf("missing challenge data")
+	}
+
+	log.Printf("[RelayClient] Challenge data: %s", challengeBytes)
+
+	// 使用私钥签名挑战
+	signature := c.config.SecretKey.Sign([]byte(challengeBytes))
+	log.Printf("[RelayClient] Generated signature: %x", signature)
+
+	// 构建响应
+	response := map[string]interface{}{
+		"type":      "response",
 		"client_id": c.config.SecretKey.Public().String(),
-		"version": RelayProtocolVersion,
+		"signature": fmt.Sprintf("%x", signature),
 	}
 
-	// 序列化握手请求
-	handshakeData, err := json.Marshal(handshakeReq)
+	// 序列化响应
+	responseData, err := json.Marshal(response)
 	if err != nil {
-		return fmt.Errorf("failed to marshal handshake request: %w", err)
+		return fmt.Errorf("failed to marshal response: %w", err)
 	}
 
-	// 发送握手请求
-	if err := c.Send(handshakeData); err != nil {
-		return fmt.Errorf("failed to send handshake request: %w", err)
+	log.Printf("[RelayClient] Sending response")
+
+	// 发送响应
+	if err := c.Send(responseData); err != nil {
+		return fmt.Errorf("failed to send response: %w", err)
 	}
 
-	// 接收握手响应
-	handshakeRespData, err := c.Receive()
+	// 接收握手完成确认
+	confirmData, err := c.Receive()
 	if err != nil {
-		return fmt.Errorf("failed to receive handshake response: %w", err)
+		return fmt.Errorf("failed to receive handshake confirmation: %w", err)
 	}
 
-	// 解析握手响应
-	var handshakeResp map[string]interface{}
-	if err := json.Unmarshal(handshakeRespData, &handshakeResp); err != nil {
-		return fmt.Errorf("failed to unmarshal handshake response: %w", err)
+	log.Printf("[RelayClient] Received confirmation: %x", confirmData)
+
+	// 解析确认
+	var confirm map[string]interface{}
+	if err := json.Unmarshal(confirmData, &confirm); err != nil {
+		return fmt.Errorf("failed to unmarshal confirmation: %w", err)
 	}
 
-	// 检查握手响应状态
-	if status, ok := handshakeResp["status"].(string); !ok || status != "ok" {
+	// 检查确认状态
+	status, ok := confirm["status"].(string)
+	if !ok || status != "ok" {
 		errorMsg := "handshake failed"
-		if msg, ok := handshakeResp["error"].(string); ok {
+		if msg, ok := confirm["error"].(string); ok {
 			errorMsg = msg
 		}
 		return fmt.Errorf(errorMsg)
 	}
 
-	return nil
-}
+	log.Printf("[RelayClient] Handshake completed successfully")
 
-// generateAuthToken 生成客户端认证令牌
-func (c *Client) generateAuthToken() string {
-	// 使用当前时间作为挑战
-	timestamp := time.Now().Unix()
-	
-	// 构建挑战数据
-	challengeData := fmt.Sprintf("%s:%d", c.config.SecretKey.Public().String(), timestamp)
-	
-	// 使用密钥签名挑战数据
-	signature := c.config.SecretKey.Sign([]byte(challengeData))
-	
-	// 构建认证令牌
-	authToken := fmt.Sprintf("%s.%d.%x", 
-		c.config.SecretKey.Public().String(), 
-		timestamp, 
-		signature)
-	
-	return authToken
+	return nil
 }
 
 // Close 关闭中继客户端

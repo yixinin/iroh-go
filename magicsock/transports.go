@@ -411,11 +411,11 @@ func NewRelayMap(mode common.RelayMode) *RelayMap {
 	switch mode {
 	case common.RelayModeDefault:
 		relays = []string{
-			"https://relay.n0.computer",
+			"https://aps1-1.relay.n0.iroh-canary.iroh.link",
 		}
 	case common.RelayModeStaging:
 		relays = []string{
-			"https://relay-staging.n0.computer",
+			"https://staging-use1-1.relay.iroh.network",
 		}
 	case common.RelayModeCustom:
 		// 自定义中继

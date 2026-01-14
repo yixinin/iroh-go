@@ -5,22 +5,14 @@ import (
 	"log"
 	"net/http"
 
-	"github/yixinin/iroh-go/common"
-	"github/yixinin/iroh-go/crypto"
-	"github/yixinin/iroh-go/discovery"
 	"github/yixinin/iroh-go/endpoint"
-	"github/yixinin/iroh-go/protocol"
 
 	"github.com/gin-gonic/gin"
 )
 
 func main() {
-	// 创建端点
-	builder := endpoint.NewBuilder()
-	builder.RelayMode(endpoint.RelayModeDefault)
-	builder.ALPNs([][]byte{[]byte("h3")})
-
-	endp, err := builder.Build()
+	// 创建端点（使用默认值）
+	endp, err := endpoint.NewEndpoint(endpoint.Options{})
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -29,87 +21,6 @@ func main() {
 	// 打印端点信息
 	fmt.Printf("Endpoint ID: %s\n", endp.ID().String())
 	fmt.Printf("Endpoint Addr: %v\n", endp.Addr())
-
-	// 初始化并发发现服务
-	discoveryService := discovery.NewConcurrentDiscovery()
-
-	// 添加mDNS发现服务
-	mdnsDiscovery, err := discovery.NewMdnsDiscovery()
-	if err != nil {
-		log.Printf("Failed to create mDNS discovery: %v", err)
-	} else {
-		discoveryService.Add(mdnsDiscovery)
-		log.Println("Added mDNS discovery service")
-	}
-
-	// 添加PKARR发现服务
-	pkarrDiscovery, err := discovery.NewPkarrDiscovery()
-	if err != nil {
-		log.Printf("Failed to create PKARR discovery: %v", err)
-	} else {
-		// 设置密钥
-		// 注意：这里应该使用实际的密钥，暂时使用一个新生成的密钥
-		secretKey := crypto.NewSecretKey()
-		pkarrDiscovery.SetSecretKey(secretKey)
-		discoveryService.Add(pkarrDiscovery)
-		log.Println("Added PKARR discovery service")
-	}
-
-	// 添加DNS发现服务
-	dnsDiscovery := discovery.NewDnsDiscovery()
-	discoveryService.Add(dnsDiscovery)
-	log.Println("Added DNS discovery service")
-
-	// 创建协议路由器
-	router := protocol.NewRouter(endp)
-
-	// 注册Echo协议处理器
-	echoHandler := protocol.NewEchoHandler()
-	router.Accept("h3", echoHandler)
-
-	// 注册HTTP/3协议处理器
-	http3Handler := protocol.NewHttp3Handler()
-	// 注册HTTP/3路由
-	http3Handler.HandleFunc("/hello", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/plain")
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("Hello from HTTP/3!"))
-	})
-	router.Accept("h3", http3Handler)
-
-	// 启动路由器
-	if err := router.Spawn(); err != nil {
-		log.Fatal(err)
-	}
-
-	// 发布当前端点信息
-	endpointData := common.NewEndpointData(
-		endp.ID(),
-		[]common.TransportAddr{},
-	).WithRelayURL("")
-
-	if err := discoveryService.Publish(endpointData); err != nil {
-		log.Printf("Failed to publish endpoint: %v", err)
-	} else {
-		log.Println("Published endpoint information")
-	}
-
-	// 发现其他端点
-	go func() {
-		// 这里可以传入特定的endpoint ID来发现特定端点
-		// 现在我们传入nil来发现所有端点
-		discoveryCh, err := discoveryService.Discover(nil)
-		if err != nil {
-			log.Printf("Failed to start discovery: %v", err)
-			return
-		}
-
-		for discoveredEndpoint := range discoveryCh {
-			log.Printf("Discovered endpoint: %s", discoveredEndpoint.Id.String())
-			log.Printf("  Relay URL: %s", discoveredEndpoint.RelayURL)
-			log.Printf("  Addresses: %v", discoveredEndpoint.Addrs)
-		}
-	}()
 
 	// 创建Gin路由器
 	ginRouter := gin.Default()

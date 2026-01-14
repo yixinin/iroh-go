@@ -4,6 +4,7 @@ import (
 	"crypto/ed25519"
 	"encoding/hex"
 	"errors"
+	"strings"
 )
 
 // SecretKey 用于身份验证的密钥
@@ -89,4 +90,28 @@ func (id *EndpointId) String() string {
 // Bytes 获取端点ID的字节表示
 func (id *EndpointId) Bytes() []byte {
 	return id.key.Bytes()
+}
+
+// ParseEndpointId 从字符串解析端点ID
+func ParseEndpointId(s string) (*EndpointId, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil, errors.New("empty endpoint ID")
+	}
+
+	b, err := hex.DecodeString(s)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(b) != ed25519.PublicKeySize {
+		return nil, errors.New("invalid endpoint ID length")
+	}
+
+	pk, err := PublicKeyFromBytes(b)
+	if err != nil {
+		return nil, err
+	}
+
+	return &EndpointId{key: *pk}, nil
 }

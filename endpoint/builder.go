@@ -16,13 +16,10 @@ type Builder struct {
 func NewBuilder() *Builder {
 	return &Builder{
 		options: Options{
-			RelayMode:            common.RelayModeDefault,
-			SecretKey:            crypto.NewSecretKey(),
-			ALPNs:                [][]byte{},
-			RelayUrls:            []string{},
-			DnsResolver:          net.DefaultResolver,
-			AddressFamilySelector: func() bool { return false },
-			InsecureSkipCertVerify: false,
+			RelayUrls:              []string{},
+			DnsResolver:            net.DefaultResolver,
+			AddressFamilySelector:  func() bool { return false },
+			InsecureSkipCertVerify: DefaultInsecureSkipCertVerify,
 		},
 	}
 }

@@ -1,6 +1,9 @@
 package discovery
 
 import (
+	"fmt"
+	"log"
+
 	"github/yixinin/iroh-go/common"
 	"github/yixinin/iroh-go/crypto"
 )
@@ -15,6 +18,20 @@ type Discovery interface {
 
 	// Close 关闭发现服务
 	Close() error
+}
+
+// DefaultDiscovery 创建默认的发现服务
+// 默认启用 mDNS 发现服务
+func DefaultDiscovery() Discovery {
+	mdnsDisc, err := NewMdnsDiscovery()
+	if err != nil {
+		log.Printf("Warning: Failed to create mDNS discovery: %v", err)
+		return NewConcurrentDiscovery()
+	}
+
+	cd := NewConcurrentDiscovery()
+	cd.Add(mdnsDisc)
+	return cd
 }
 
 // ConcurrentDiscovery 并发发现服务
@@ -48,6 +65,11 @@ func (cd *ConcurrentDiscovery) Publish(data *common.EndpointData) error {
 func (cd *ConcurrentDiscovery) Discover(id *crypto.EndpointId) (<-chan *common.EndpointData, error) {
 	ch := make(chan *common.EndpointData)
 
+	if len(cd.discoveries) == 0 {
+		close(ch)
+		return ch, nil
+	}
+
 	// 启动所有发现服务
 	for _, discovery := range cd.discoveries {
 		go func(d Discovery) {
@@ -66,10 +88,14 @@ func (cd *ConcurrentDiscovery) Discover(id *crypto.EndpointId) (<-chan *common.E
 
 // Close 关闭所有发现服务
 func (cd *ConcurrentDiscovery) Close() error {
+	var errs []error
 	for _, discovery := range cd.discoveries {
 		if err := discovery.Close(); err != nil {
-			// 记录错误但继续
+			errs = append(errs, err)
 		}
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("failed to close some discoveries: %v", errs)
 	}
 	return nil
 }

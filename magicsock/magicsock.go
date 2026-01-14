@@ -4,72 +4,79 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"log"
+	"net"
+	"sync"
+	"time"
+
 	"github/yixinin/iroh-go/common"
 	"github/yixinin/iroh-go/crypto"
+	"github/yixinin/iroh-go/discovery"
 	"github/yixinin/iroh-go/relay"
-	"time"
 
 	"github.com/quic-go/quic-go"
 )
 
-// Options 魔法套接字选项
+const (
+	defaultDialTimeout = 30 * time.Second
+	defaultKeepAlive   = 30 * time.Second
+	holepunchInterval  = 5 * time.Second
+	pathCheckInterval  = 10 * time.Second
+
+	// DefaultRelayMode 默认中继模式
+	DefaultRelayMode = common.RelayModeDefault
+	// DefaultALPN 默认 ALPN 协议
+	DefaultALPN = "h3"
+)
+
 type Options struct {
 	RelayMode common.RelayMode
 	SecretKey *crypto.SecretKey
 	ALPNs     [][]byte
+	Discovery discovery.Discovery
 }
 
-// EndpointAddr 端点地址
 type EndpointAddr struct {
 	Id    *crypto.EndpointId
 	Addrs []common.TransportAddr
 }
 
-// Connection 连接
 type Connection struct {
 	conn     quic.Connection
 	remoteId *crypto.EndpointId
 	alpn     []byte
 }
 
-// Conn 获取连接的底层连接
 func (c *Connection) Conn() quic.Connection {
 	return c.conn
 }
 
-// RemoteId 获取远程端点ID
 func (c *Connection) RemoteId() *crypto.EndpointId {
 	return c.remoteId
 }
 
-// ALPN 获取ALPN
 func (c *Connection) ALPN() []byte {
 	return c.alpn
 }
 
-// Incoming incoming连接
 type Incoming struct {
 	conn     quic.Connection
 	remoteId *crypto.EndpointId
 	alpn     []byte
 }
 
-// Conn 获取incoming连接的底层连接
 func (i *Incoming) Conn() quic.Connection {
 	return i.conn
 }
 
-// RemoteId 获取远程端点ID
 func (i *Incoming) RemoteId() *crypto.EndpointId {
 	return i.remoteId
 }
 
-// ALPN 获取ALPN
 func (i *Incoming) ALPN() []byte {
 	return i.alpn
 }
 
-// MagicSock 负责路由数据包到端点，最初通过中继路由，然后尝试建立直接连接
 type MagicSock struct {
 	endpoint     *quic.Listener
 	remoteMap    *RemoteMap
@@ -78,161 +85,514 @@ type MagicSock struct {
 	relayClients []*relay.Client
 	id           *crypto.EndpointId
 	secretKey    *crypto.SecretKey
+	discovery    discovery.Discovery
+
+	remoteStates   map[string]*RemoteStateActor
+	remoteStatesMu sync.RWMutex
+
+	localDirectAddrs *LocalDirectAddrs
+	relayMappedAddrs *AddrMap
+
+	ctx    context.Context
+	cancel context.CancelFunc
+	wg     sync.WaitGroup
 }
 
-// NewMagicSock 创建新的魔法套接字
 func NewMagicSock(opts Options) (*MagicSock, error) {
-	// 创建远程节点映射
-	remoteMap := NewRemoteMap()
+	// 应用默认值
+	if opts.RelayMode == 0 {
+		opts.RelayMode = DefaultRelayMode
+	}
+	if opts.SecretKey == nil {
+		opts.SecretKey = crypto.NewSecretKey()
+	}
+	if len(opts.ALPNs) == 0 {
+		opts.ALPNs = [][]byte{[]byte(DefaultALPN)}
+	}
+	if opts.Discovery == nil {
+		opts.Discovery = discovery.DefaultDiscovery()
+	}
 
-	// 创建中继映射
+	ctx, cancel := context.WithCancel(context.Background())
+
+	remoteMap := NewRemoteMap()
 	relayMap := NewRelayMap(opts.RelayMode)
 
-	// 初始化传输层
 	transports, err := initTransports(opts.RelayMode, relayMap)
 	if err != nil {
+		cancel()
 		return nil, err
 	}
 
-	// 初始化中继客户端
 	var relayClients []*relay.Client
 	if opts.RelayMode != common.RelayModeDisabled {
-		for _, relayURL := range relayMap.Relays() {
+		log.Printf("[MagicSock] Initializing relay connections (mode: %v)", opts.RelayMode)
+
+		relayURLs := relayMap.Relays()
+		if len(relayURLs) == 0 {
+			log.Printf("[MagicSock] Warning: No relay URLs configured")
+		}
+
+		for _, relayURL := range relayURLs {
+			log.Printf("[MagicSock] Attempting to connect to relay: %s", relayURL)
+
 			config := relay.NewConfig([]string{relayURL}, opts.SecretKey)
 			client, err := relay.NewClient(config)
 			if err != nil {
+				log.Printf("[MagicSock] Failed to create relay client for %s: %v", relayURL, err)
 				continue
 			}
+
 			if err := client.Connect(); err != nil {
+				log.Printf("[MagicSock] Failed to connect to relay %s: %v", relayURL, err)
 				continue
 			}
+
 			relayClients = append(relayClients, client)
+			log.Printf("[MagicSock] Successfully connected to relay: %s", relayURL)
+		}
+
+		if len(relayClients) == 0 {
+			log.Printf("[MagicSock] Warning: No relay connections established")
+		} else {
+			log.Printf("[MagicSock] Successfully connected to %d relay(s)", len(relayClients))
+		}
+	} else {
+		log.Printf("[MagicSock] Relay mode disabled")
+	}
+
+	quicConfig := &quic.Config{
+		MaxIdleTimeout:  defaultKeepAlive,
+		KeepAlivePeriod: defaultKeepAlive,
+	}
+	log.Printf("[MagicSock] Starting QUIC listener on 0.0.0.0:0")
+	listener, err := quic.ListenAddr("0.0.0.0:0", generateTLSConfig(opts.SecretKey, opts.ALPNs), quicConfig)
+	if err != nil {
+		log.Printf("[MagicSock] Failed to start QUIC listener: %v", err)
+		cancel()
+		return nil, err
+	}
+	log.Printf("[MagicSock] QUIC listener started successfully on %s", listener.Addr())
+
+	id := crypto.EndpointIdFromPublicKey(opts.SecretKey.Public())
+	log.Printf("[MagicSock] Endpoint ID: %s", id.String())
+
+	localDirectAddrs := NewLocalDirectAddrs()
+	localAddrStrings := transports.LocalAddrs()
+	localAddrs := make([]net.Addr, 0, len(localAddrStrings))
+	for _, addrStr := range localAddrStrings {
+		if udpAddr, err := net.ResolveUDPAddr("udp", addrStr); err == nil {
+			localAddrs = append(localAddrs, udpAddr)
+		}
+	}
+	localDirectAddrs.Set(localAddrs)
+	log.Printf("[MagicSock] Local addresses: %v", localAddrStrings)
+
+	relayMappedAddrs := NewAddrMap()
+
+	ms := &MagicSock{
+		endpoint:         listener,
+		remoteMap:        remoteMap,
+		transports:       transports,
+		relayMap:         relayMap,
+		relayClients:     relayClients,
+		id:               id,
+		secretKey:        opts.SecretKey,
+		discovery:        opts.Discovery,
+		remoteStates:     make(map[string]*RemoteStateActor),
+		localDirectAddrs: localDirectAddrs,
+		relayMappedAddrs: relayMappedAddrs,
+		ctx:              ctx,
+		cancel:           cancel,
+	}
+
+	ms.startBackgroundTasks()
+
+	status := ms.Status()
+	log.Printf("[MagicSock] MagicSock initialized successfully")
+	log.Printf("[MagicSock] Status: Relay=%d, Active=%d, RemoteStates=%d, LocalAddrs=%v, EndpointId=%s",
+		status.RelayConnectedCount, status.ActiveConnections, status.RemoteStatesCount,
+		status.LocalAddresses, status.EndpointId)
+
+	return ms, nil
+}
+
+func (ms *MagicSock) startBackgroundTasks() {
+	ms.wg.Add(1)
+	go func() {
+		defer ms.wg.Done()
+		ms.acceptLoop()
+	}()
+
+	ms.wg.Add(1)
+	go func() {
+		defer ms.wg.Done()
+		ms.pathCheckLoop()
+	}()
+
+	ms.wg.Add(1)
+	go func() {
+		defer ms.wg.Done()
+		ms.networkMonitorLoop()
+	}()
+}
+
+func (ms *MagicSock) acceptLoop() {
+	for {
+		select {
+		case <-ms.ctx.Done():
+			return
+		default:
+			conn, err := ms.endpoint.Accept(ms.ctx)
+			if err != nil {
+				return
+			}
+
+			ms.handleIncomingConnection(conn)
+		}
+	}
+}
+
+func (ms *MagicSock) handleIncomingConnection(conn quic.Connection) {
+	remoteAddr := conn.RemoteAddr()
+
+	remoteId := ms.extractEndpointId(conn)
+
+	if remoteId != nil {
+		ms.remoteStatesMu.Lock()
+		actor, exists := ms.remoteStates[remoteId.String()]
+		if !exists {
+			actor = ms.createRemoteStateActor(remoteId)
+			ms.remoteStates[remoteId.String()] = actor
+			actor.Start()
+		}
+		ms.remoteStatesMu.Unlock()
+
+		actor.AddConnection(conn, uint64(time.Now().UnixNano()))
+
+		udpAddr, ok := remoteAddr.(*net.UDPAddr)
+		if ok {
+			addr := NewAddrFromIP(udpAddr)
+			actor.AddPath(uint64(time.Now().UnixNano()), PathIdZero, *addr)
+		}
+	}
+}
+
+func (ms *MagicSock) extractEndpointId(conn quic.Connection) *crypto.EndpointId {
+	return nil
+}
+
+func (ms *MagicSock) pathCheckLoop() {
+	ticker := time.NewTicker(pathCheckInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ms.ctx.Done():
+			return
+		case <-ticker.C:
+			ms.checkAllPaths()
+		}
+	}
+}
+
+func (ms *MagicSock) checkAllPaths() {
+	ms.remoteStatesMu.RLock()
+	defer ms.remoteStatesMu.RUnlock()
+
+	for _, actor := range ms.remoteStates {
+		actor.checkConnections()
+	}
+}
+
+func (ms *MagicSock) networkMonitorLoop() {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ms.ctx.Done():
+			return
+		case <-ticker.C:
+			ms.monitorNetworkChanges()
+		}
+	}
+}
+
+func (ms *MagicSock) monitorNetworkChanges() {
+	currentAddrs := ms.transports.LocalAddrs()
+	currentAddrsSet := make(map[string]bool)
+	for _, addr := range currentAddrs {
+		currentAddrsSet[addr] = true
+	}
+
+	localAddrs := ms.localDirectAddrs.Get()
+	oldAddrsSet := make(map[string]bool)
+	for _, addr := range localAddrs {
+		oldAddrsSet[addr.String()] = true
+	}
+
+	hasChanges := false
+	for addr := range currentAddrsSet {
+		if !oldAddrsSet[addr] {
+			hasChanges = true
+			fmt.Printf("Network change detected: new address %s\n", addr)
 		}
 	}
 
-	// 创建QUIC监听器
-	quicConfig := &quic.Config{
-		// 配置QUIC
-	}
-	listener, err := quic.ListenAddr("0.0.0.0:0", generateTLSConfig(opts.SecretKey, opts.ALPNs), quicConfig)
-	if err != nil {
-		return nil, err
+	for addr := range oldAddrsSet {
+		if !currentAddrsSet[addr] {
+			hasChanges = true
+			fmt.Printf("Network change detected: removed address %s\n", addr)
+		}
 	}
 
-	// 获取端点ID
-	id := crypto.EndpointIdFromPublicKey(opts.SecretKey.Public())
-
-	return &MagicSock{
-		endpoint:     listener,
-		remoteMap:    remoteMap,
-		transports:   transports,
-		relayMap:     relayMap,
-		relayClients: relayClients,
-		id:           id,
-		secretKey:    opts.SecretKey,
-	}, nil
+	if hasChanges {
+		ms.handleNetworkChange()
+	}
 }
 
-// Connect 连接到远程端点
+func (ms *MagicSock) handleNetworkChange() {
+	newAddrs := make([]net.Addr, 0)
+	for _, addrStr := range ms.transports.LocalAddrs() {
+		if udpAddr, err := net.ResolveUDPAddr("udp", addrStr); err == nil {
+			newAddrs = append(newAddrs, udpAddr)
+		}
+	}
+	ms.localDirectAddrs.Set(newAddrs)
+
+	ms.remoteStatesMu.RLock()
+	for _, actor := range ms.remoteStates {
+		actor.triggerHolepunching()
+	}
+	ms.remoteStatesMu.RUnlock()
+}
+
+func (ms *MagicSock) optimizePaths() {
+	ms.remoteStatesMu.RLock()
+	defer ms.remoteStatesMu.RUnlock()
+
+	for _, actor := range ms.remoteStates {
+		ms.optimizeRemoteStatePaths(actor)
+	}
+}
+
+func (ms *MagicSock) optimizeRemoteStatePaths(actor *RemoteStateActor) {
+	remoteInfo := actor.GetRemoteInfo()
+	if remoteInfo == nil {
+		return
+	}
+
+	actor.mu.Lock()
+	defer actor.mu.Unlock()
+
+	if ms.discovery != nil {
+		discoveryCh, err := ms.discovery.Discover(remoteInfo.Id)
+		if err == nil {
+			for data := range discoveryCh {
+				if data.Id.String() == remoteInfo.Id.String() {
+					for _, transportAddr := range data.Addrs {
+						if ipAddr, ok := transportAddr.(*common.TransportAddrIp); ok {
+							udpAddr, err := net.ResolveUDPAddr("udp", ipAddr.Addr)
+							if err == nil {
+								addr := NewAddrFromIP(udpAddr)
+								actor.openPath(addr)
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+func (ms *MagicSock) createRemoteStateActor(remoteId *crypto.EndpointId) *RemoteStateActor {
+	return NewRemoteStateActor(
+		remoteId,
+		ms.id,
+		ms.localDirectAddrs,
+		ms.relayMappedAddrs,
+		ms,
+	)
+}
+
 func (ms *MagicSock) Connect(addr EndpointAddr, alpn []byte) (*Connection, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	log.Printf("[MagicSock] Attempting to connect to endpoint %s", addr.Id.String())
+
+	ctx, cancel := context.WithTimeout(ms.ctx, defaultDialTimeout)
 	defer cancel()
 
-	// 尝试直接连接所有可用地址
+	if ms.discovery != nil {
+		log.Printf("[MagicSock] Starting discovery for endpoint %s", addr.Id.String())
+		if err := ms.discoverAndConnect(ctx, addr, alpn); err != nil {
+			log.Printf("[MagicSock] Discovery failed: %v, trying direct connection", err)
+		} else {
+			log.Printf("[MagicSock] Discovery completed successfully")
+		}
+	}
+
+	log.Printf("[MagicSock] Attempting direct connection to endpoint %s", addr.Id.String())
 	directConn, err := ms.tryDirectConnection(ctx, addr, alpn)
 	if err == nil {
+		log.Printf("[MagicSock] Direct connection successful to endpoint %s", addr.Id.String())
 		return directConn, nil
 	}
-	fmt.Printf("Direct connection failed: %v, trying relay connection\n", err)
+	log.Printf("[MagicSock] Direct connection failed: %v, trying relay connection", err)
 
-	// 尝试通过中继连接
+	log.Printf("[MagicSock] Attempting relay connection to endpoint %s", addr.Id.String())
 	relayConn, err := ms.tryRelayConnection(ctx, addr, alpn)
 	if err == nil {
+		log.Printf("[MagicSock] Relay connection successful to endpoint %s", addr.Id.String())
 		return relayConn, nil
 	}
-	fmt.Printf("Relay connection failed: %v\n", err)
+	log.Printf("[MagicSock] Relay connection failed: %v", err)
 
 	return nil, fmt.Errorf("failed to connect to peer: all connection attempts failed")
 }
 
-// tryDirectConnection 尝试直接连接到远程端点
+func (ms *MagicSock) discoverAndConnect(ctx context.Context, addr EndpointAddr, alpn []byte) error {
+	log.Printf("[MagicSock] Starting discovery for endpoint %s", addr.Id.String())
+
+	discoveryCh, err := ms.discovery.Discover(addr.Id)
+	if err != nil {
+		log.Printf("[MagicSock] Discovery error for endpoint %s: %v", addr.Id.String(), err)
+		return err
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			log.Printf("[MagicSock] Discovery timeout for endpoint %s", addr.Id.String())
+			return ctx.Err()
+		case data, ok := <-discoveryCh:
+			if !ok {
+				log.Printf("[MagicSock] Discovery channel closed for endpoint %s", addr.Id.String())
+				return nil
+			}
+
+			if data.Id.String() == addr.Id.String() {
+				log.Printf("[MagicSock] Discovered endpoint %s with %d addresses", data.Id.String(), len(data.Addrs))
+
+				if len(data.Addrs) > 0 {
+					remoteInfo := &RemoteInfo{
+						Id:        data.Id,
+						Addresses: make([]string, 0, len(data.Addrs)),
+						RelayUrl:  data.RelayURL,
+					}
+					for _, transportAddr := range data.Addrs {
+						remoteInfo.Addresses = append(remoteInfo.Addresses, transportAddr.String())
+					}
+					ms.remoteMap.Set(data.Id, remoteInfo)
+
+					addr.Addrs = data.Addrs
+					if data.RelayURL != "" {
+						addr.Addrs = append(addr.Addrs, &common.TransportAddrRelay{Url: data.RelayURL})
+					}
+					log.Printf("[MagicSock] Updated endpoint %s with %d addresses", data.Id.String(), len(addr.Addrs))
+				}
+			}
+		}
+	}
+}
+
 func (ms *MagicSock) tryDirectConnection(ctx context.Context, addr EndpointAddr, alpn []byte) (*Connection, error) {
-	// 尝试使用远程映射中的地址
+	log.Printf("[MagicSock] Trying direct connection to endpoint %s", addr.Id.String())
+
 	mappedAddr, err := ms.ResolveRemote(addr)
 	if err == nil {
+		log.Printf("[MagicSock] Attempting connection to mapped address %s", mappedAddr.Addr)
 		conn, err := ms.dialQUIC(ctx, mappedAddr.Addr, addr.Id, alpn)
 		if err == nil {
+			log.Printf("[MagicSock] Successfully connected via mapped address %s", mappedAddr.Addr)
 			return conn, nil
 		}
-		fmt.Printf("Failed to connect to mapped address %s: %v\n", mappedAddr.Addr, err)
+		log.Printf("[MagicSock] Failed to connect to mapped address %s: %v", mappedAddr.Addr, err)
+	} else {
+		log.Printf("[MagicSock] No mapped address found: %v", err)
 	}
 
-	// 尝试使用提供的所有地址
-	for _, transportAddr := range addr.Addrs {
+	log.Printf("[MagicSock] Trying %d transport address(es)", len(addr.Addrs))
+	for i, transportAddr := range addr.Addrs {
+		log.Printf("[MagicSock] Attempting connection to transport address %d: %s", i+1, transportAddr.String())
 		conn, err := ms.dialQUIC(ctx, transportAddr.String(), addr.Id, alpn)
 		if err == nil {
+			log.Printf("[MagicSock] Successfully connected via transport address %s", transportAddr.String())
 			return conn, nil
 		}
-		fmt.Printf("Failed to connect to address %s: %v\n", transportAddr.String(), err)
+		log.Printf("[MagicSock] Failed to connect to address %s: %v", transportAddr.String(), err)
 	}
 
+	log.Printf("[MagicSock] All direct connection attempts failed for endpoint %s", addr.Id.String())
 	return nil, fmt.Errorf("all direct connection attempts failed")
 }
 
-// tryRelayConnection 尝试通过中继连接到远程端点
 func (ms *MagicSock) tryRelayConnection(ctx context.Context, addr EndpointAddr, alpn []byte) (*Connection, error) {
 	if len(ms.relayClients) == 0 {
+		log.Printf("[MagicSock] No relay clients available for endpoint %s", addr.Id.String())
 		return nil, fmt.Errorf("no relay clients available")
 	}
 
-	for _, relayClient := range ms.relayClients {
-		// 连接到中继
+	log.Printf("[MagicSock] Trying %d relay client(s) for endpoint %s", len(ms.relayClients), addr.Id.String())
+
+	for i, relayClient := range ms.relayClients {
+		log.Printf("[MagicSock] Attempting relay connection via client %d", i+1)
+
 		relayConn, err := relayClient.ConnectToPeer(addr.Id, alpn)
 		if err != nil {
-			fmt.Printf("Failed to connect to peer via relay: %v\n", err)
+			log.Printf("[MagicSock] Failed to connect to peer via relay client %d: %v", i+1, err)
 			continue
 		}
 
-		// 检查返回的连接类型
 		if rc, ok := relayConn.(*relay.RelayConnection); ok {
-			fmt.Printf("Connected to peer %s via relay, relay ID: %s\n", addr.Id.String(), rc.RelayId())
+			log.Printf("[MagicSock] Connected to peer %s via relay, relay ID: %s", addr.Id.String(), rc.RelayId())
 
-			// TODO: 实现通过中继的QUIC连接
-			// 这里需要使用中继连接创建一个 QUIC 连接
-			// 暂时使用模拟实现，后续需要根据实际情况修改
-
-			// 模拟通过中继的QUIC连接
-			// 实际实现需要使用中继提供的连接信息创建QUIC连接
 			conn, err := ms.dialQUIC(ctx, "127.0.0.1:0", addr.Id, alpn)
 			if err == nil {
+				log.Printf("[MagicSock] Successfully created QUIC connection via relay")
 				return conn, nil
 			}
-			fmt.Printf("Failed to create QUIC connection via relay: %v\n", err)
+			log.Printf("[MagicSock] Failed to create QUIC connection via relay: %v", err)
 		} else {
-			fmt.Printf("Unexpected relay connection type: %T\n", relayConn)
+			log.Printf("[MagicSock] Unexpected relay connection type: %T", relayConn)
 		}
 	}
 
+	log.Printf("[MagicSock] All %d relay connection attempts failed for endpoint %s", len(ms.relayClients), addr.Id.String())
 	return nil, fmt.Errorf("all relay connection attempts failed")
 }
 
-// dialQUIC 建立QUIC连接
 func (ms *MagicSock) dialQUIC(ctx context.Context, addr string, remoteId *crypto.EndpointId, alpn []byte) (*Connection, error) {
-	// 创建QUIC配置
+	log.Printf("[MagicSock] Dialing QUIC to %s (remote ID: %s, ALPN: %s)", addr, remoteId.String(), string(alpn))
+
 	quicConfig := &quic.Config{
-		MaxIdleTimeout: 30 * time.Second,
+		MaxIdleTimeout:  defaultKeepAlive,
+		KeepAlivePeriod: defaultKeepAlive,
 	}
 
-	// 生成TLS配置
 	tlsConfig := generateTLSConfig(ms.secretKey, [][]byte{alpn})
 
-	// 建立QUIC连接
 	conn, err := quic.DialAddr(ctx, addr, tlsConfig, quicConfig)
 	if err != nil {
+		log.Printf("[MagicSock] QUIC dial failed to %s: %v", addr, err)
 		return nil, err
 	}
 
-	// 创建并返回Connection实例
+	log.Printf("[MagicSock] QUIC connection established to %s", addr)
+
+	if remoteId != nil {
+		ms.remoteStatesMu.Lock()
+		actor, exists := ms.remoteStates[remoteId.String()]
+		if !exists {
+			actor = ms.createRemoteStateActor(remoteId)
+			ms.remoteStates[remoteId.String()] = actor
+			actor.Start()
+			log.Printf("[MagicSock] Created remote state actor for %s", remoteId.String())
+		}
+		ms.remoteStatesMu.Unlock()
+
+		actor.AddConnection(conn, uint64(time.Now().UnixNano()))
+	}
+
 	return &Connection{
 		conn:     conn,
 		remoteId: remoteId,
@@ -240,22 +600,19 @@ func (ms *MagicSock) dialQUIC(ctx context.Context, addr string, remoteId *crypto
 	}, nil
 }
 
-// Accept 接受incoming连接
 func (ms *MagicSock) Accept() (<-chan *Incoming, error) {
 	ch := make(chan *Incoming)
 
-	// 启动接受循环
 	go func() {
 		for {
-			conn, err := ms.endpoint.Accept(context.Background())
+			conn, err := ms.endpoint.Accept(ms.ctx)
 			if err != nil {
 				break
 			}
 
-			// 处理incoming连接
 			incoming := &Incoming{
-				conn: conn,
-				// TODO: 解析remoteId和alpn
+				conn:     conn,
+				remoteId: ms.extractEndpointId(conn),
 			}
 			ch <- incoming
 		}
@@ -265,18 +622,14 @@ func (ms *MagicSock) Accept() (<-chan *Incoming, error) {
 	return ch, nil
 }
 
-// ResolveRemote 解析远程端点地址
 func (ms *MagicSock) ResolveRemote(addr EndpointAddr) (*MappedAddr, error) {
-	// 从远程映射中获取节点信息
 	remoteInfo, ok := ms.remoteMap.Get(addr.Id)
 	if ok && len(remoteInfo.Addresses) > 0 {
-		// 返回第一个可用地址
 		return &MappedAddr{
 			Addr: remoteInfo.Addresses[0],
 		}, nil
 	}
 
-	// 从提供的地址中选择第一个可用地址
 	if len(addr.Addrs) > 0 {
 		return &MappedAddr{
 			Addr: addr.Addrs[0].String(),
@@ -286,23 +639,17 @@ func (ms *MagicSock) ResolveRemote(addr EndpointAddr) (*MappedAddr, error) {
 	return nil, fmt.Errorf("no address available for remote endpoint")
 }
 
-// Id 获取端点ID
 func (ms *MagicSock) Id() *crypto.EndpointId {
 	return ms.id
 }
 
-// Addr 获取端点地址
 func (ms *MagicSock) Addr() EndpointAddr {
 	addrs := []common.TransportAddr{}
 
-	// 添加本地IP地址
 	localAddr := ms.endpoint.Addr().String()
 	addrs = append(addrs, &common.TransportAddrIp{
 		Addr: localAddr,
 	})
-
-	// 添加中继地址
-	// 暂时不添加中继地址，因为relay.Client没有Addr()方法
 
 	return EndpointAddr{
 		Id:    ms.id,
@@ -310,26 +657,95 @@ func (ms *MagicSock) Addr() EndpointAddr {
 	}
 }
 
-// Close 关闭魔法套接字
 func (ms *MagicSock) Close() error {
+	log.Printf("[MagicSock] Closing MagicSock")
+
+	ms.cancel()
+
+	ms.remoteStatesMu.Lock()
+	for _, actor := range ms.remoteStates {
+		actor.Stop()
+	}
+	ms.remoteStatesMu.Unlock()
+
+	ms.wg.Wait()
+
+	log.Printf("[MagicSock] MagicSock closed")
 	return ms.endpoint.Close()
 }
 
-// MappedAddr 映射地址
+type ConnectionStatus struct {
+	RelayConnectedCount int
+	ActiveConnections   int
+	RemoteStatesCount   int
+	LocalAddresses      []string
+	EndpointId          string
+}
+
+func (ms *MagicSock) Status() *ConnectionStatus {
+	ms.remoteStatesMu.RLock()
+	defer ms.remoteStatesMu.RUnlock()
+
+	return &ConnectionStatus{
+		RelayConnectedCount: len(ms.relayClients),
+		ActiveConnections:   len(ms.remoteStates),
+		RemoteStatesCount:   len(ms.remoteStates),
+		LocalAddresses:      ms.transports.LocalAddrs(),
+		EndpointId:          ms.id.String(),
+	}
+}
+
 type MappedAddr struct {
 	Addr string
 }
 
-// generateTLSConfig 生成TLS配置
 func generateTLSConfig(secretKey *crypto.SecretKey, alpns [][]byte) *tls.Config {
-	// 转换alpns为[]string类型
 	nextProtos := make([]string, len(alpns))
 	for i, alpn := range alpns {
 		nextProtos[i] = string(alpn)
 	}
 
-	// TODO: 实现TLS配置生成
 	return &tls.Config{
 		NextProtos: nextProtos,
 	}
+}
+
+func (ms *MagicSock) Resolve(ctx context.Context, id *crypto.EndpointId) (<-chan *DiscoveryItem, error) {
+	if ms.discovery == nil {
+		ch := make(chan *DiscoveryItem)
+		close(ch)
+		return ch, nil
+	}
+
+	dataCh, err := ms.discovery.Discover(id)
+	if err != nil {
+		return nil, err
+	}
+
+	resultCh := make(chan *DiscoveryItem)
+
+	go func() {
+		defer close(resultCh)
+
+		for data := range dataCh {
+			item := &DiscoveryItem{
+				Addrs: make([]Addr, 0, len(data.Addrs)),
+			}
+
+			for _, transportAddr := range data.Addrs {
+				if ipAddr, ok := transportAddr.(*common.TransportAddrIp); ok {
+					udpAddr, err := net.ResolveUDPAddr("udp", ipAddr.Addr)
+					if err == nil {
+						item.Addrs = append(item.Addrs, *NewAddrFromIP(udpAddr))
+					}
+				}
+			}
+
+			if len(item.Addrs) > 0 {
+				resultCh <- item
+			}
+		}
+	}()
+
+	return resultCh, nil
 }

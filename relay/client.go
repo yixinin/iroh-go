@@ -1,7 +1,7 @@
 package relay
 
 import (
-	"encoding/json"
+	"encoding/binary"
 	"fmt"
 	"log"
 	"net/http"
@@ -68,30 +68,64 @@ const (
 	MaxFrameSize = 16384
 )
 
-// 消息类型
+// 消息类型 (iroh-relay binary protocol)
 const (
+	// MsgTypeServerChallenge 服务器挑战消息
+	MsgTypeServerChallenge = 0x00
+	// MsgTypeClientAuth 客户端认证消息
+	MsgTypeClientAuth = 0x01
+	// MsgTypeServerAuthResult 服务器认证结果
+	MsgTypeServerAuthResult = 0x02
+	// MsgTypeServerDeniesAuth 服务器拒绝认证
+	MsgTypeServerDeniesAuth = 0x03
 	// MsgTypeConnect 连接请求
-	MsgTypeConnect = 0x01
+	MsgTypeConnect = 0x10
 	// MsgTypeConnectResponse 连接响应
-	MsgTypeConnectResponse = 0x02
+	MsgTypeConnectResponse = 0x11
 	// MsgTypeData 数据传输
-	MsgTypeData = 0x03
+	MsgTypeData = 0x20
+	// MsgTypeClose 关闭连接
+	MsgTypeClose = 0x30
 )
 
-// ConnectRequest 连接请求消息
-type ConnectRequest struct {
-	MsgType  byte   `json:"msg_type"`
-	PeerId   string `json:"peer_id"`
-	ALPN     []byte `json:"alpn"`
-	ClientId string `json:"client_id"`
+// ServerChallenge 服务器挑战消息 (MsgTypeServerChallenge)
+type ServerChallenge struct {
+	Challenge [16]byte
 }
 
-// ConnectResponse 连接响应消息
+// ClientAuth 客户端认证消息 (MsgTypeClientAuth)
+type ClientAuth struct {
+	PublicKey [32]byte
+	Signature [64]byte
+}
+
+// ServerAuthResult 服务器认证结果 (MsgTypeServerAuthResult)
+type ServerAuthResult struct {
+	Status uint8
+}
+
+// ConnectRequest 连接请求消息 (MsgTypeConnect)
+type ConnectRequest struct {
+	PeerId   [32]byte
+	ALPN     []byte
+	ClientId [32]byte
+}
+
+// ConnectResponse 连接响应消息 (MsgTypeConnectResponse)
 type ConnectResponse struct {
-	MsgType byte   `json:"msg_type"`
-	Status  uint8  `json:"status"`
-	RelayId string `json:"relay_id,omitempty"`
-	Error   string `json:"error,omitempty"`
+	Status  uint8
+	RelayId [16]byte
+}
+
+// DataMessage 数据消息 (MsgTypeData)
+type DataMessage struct {
+	RelayId [16]byte
+	Data    []byte
+}
+
+// CloseMessage 关闭消息 (MsgTypeClose)
+type CloseMessage struct {
+	RelayId [16]byte
 }
 
 // Client 中继客户端
@@ -133,14 +167,19 @@ func (c *Client) Connect() error {
 
 	// 构建 WebSocket 拨号器
 	dialer := &websocket.Dialer{
-		HandshakeTimeout: 10 * time.Second,
-		ReadBufferSize:   MaxFrameSize,
-		WriteBufferSize:  MaxFrameSize,
-		Subprotocols:     []string{RelayProtocolVersion},
+		HandshakeTimeout:  30 * time.Second,
+		ReadBufferSize:    MaxFrameSize,
+		WriteBufferSize:   MaxFrameSize,
+		Subprotocols:      []string{RelayProtocolVersion},
+		NetDial:           nil,
+		Proxy:             http.ProxyFromEnvironment,
+		TLSClientConfig:   nil,
+		EnableCompression: false,
 	}
 
 	// 构建请求头
 	headers := http.Header{}
+	headers.Set("User-Agent", "iroh-go/1.0")
 	log.Printf("[RelayClient] Headers: %v", headers)
 	log.Printf("[RelayClient] Subprotocols: %v", dialer.Subprotocols)
 
@@ -188,80 +227,97 @@ func (c *Client) Connect() error {
 func (c *Client) handshake() error {
 	log.Printf("[RelayClient] Waiting for server challenge")
 
-	// 接收服务器挑战
 	challengeData, err := c.Receive()
 	if err != nil {
 		return fmt.Errorf("failed to receive challenge: %w", err)
 	}
 
-	log.Printf("[RelayClient] Received challenge: %x", challengeData)
+	log.Printf("[RelayClient] Received %d bytes from server", len(challengeData))
+	log.Printf("[RelayClient] Raw data: %x", challengeData)
 
-	// 解析挑战
-	var challenge map[string]interface{}
-	if err := json.Unmarshal(challengeData, &challenge); err != nil {
-		return fmt.Errorf("failed to unmarshal challenge: %w", err)
+	if len(challengeData) < 16 {
+		return fmt.Errorf("invalid challenge message: expected at least 16 bytes, got %d", len(challengeData))
 	}
 
-	// 检查挑战类型
-	challengeType, ok := challenge["type"].(string)
-	if !ok || challengeType != "challenge" {
-		return fmt.Errorf("invalid challenge type: %v", challengeType)
+	var challenge ServerChallenge
+	var challengeBytes []byte
+
+	if len(challengeData) == 16 {
+		log.Printf("[RelayClient] Server sent 16 bytes directly (no message type)")
+		copy(challenge.Challenge[:], challengeData[0:16])
+		challengeBytes = challengeData[0:16]
+	} else if len(challengeData) == 17 {
+		msgType := challengeData[0]
+		log.Printf("[RelayClient] Server sent message type: 0x%02x", msgType)
+		if msgType != MsgTypeServerChallenge {
+			log.Printf("[RelayClient] WARNING: Expected ServerChallenge (0x%02x), got 0x%02x", MsgTypeServerChallenge, msgType)
+			return fmt.Errorf("expected ServerChallenge (0x%02x), got 0x%02x", MsgTypeServerChallenge, msgType)
+		}
+		copy(challenge.Challenge[:], challengeData[1:17])
+		challengeBytes = challengeData[1:17]
+	} else {
+		return fmt.Errorf("invalid challenge message: expected 16 or 17 bytes, got %d", len(challengeData))
 	}
 
-	// 获取挑战数据
-	challengeBytes, ok := challenge["challenge"].(string)
-	if !ok {
-		return fmt.Errorf("missing challenge data")
+	log.Printf("[RelayClient] Challenge: %x", challenge.Challenge)
+
+	publicKey := c.config.SecretKey.Public()
+
+	signature := c.config.SecretKey.Sign(challengeBytes)
+
+	log.Printf("[RelayClient] Generated signature (direct challenge signing): %x", signature)
+
+	var auth ClientAuth
+	copy(auth.PublicKey[:], publicKey.Bytes())
+	copy(auth.Signature[:], signature)
+
+	authData := make([]byte, 1+32+64)
+	authData[0] = MsgTypeClientAuth
+	copy(authData[1:33], auth.PublicKey[:])
+	copy(authData[33:97], auth.Signature[:])
+
+	log.Printf("[RelayClient] Sending ClientAuth message")
+	log.Printf("[RelayClient] Message type: 0x%02x", authData[0])
+	log.Printf("[RelayClient] Public key: %x", authData[1:33])
+	log.Printf("[RelayClient] Signature: %x", authData[33:97])
+	log.Printf("[RelayClient] Full message (%d bytes): %x", len(authData), authData)
+
+	if err := c.Send(authData); err != nil {
+		return fmt.Errorf("failed to send auth: %w", err)
 	}
 
-	log.Printf("[RelayClient] Challenge data: %s", challengeBytes)
+	log.Printf("[RelayClient] ClientAuth message sent successfully")
 
-	// 使用私钥签名挑战
-	signature := c.config.SecretKey.Sign([]byte(challengeBytes))
-	log.Printf("[RelayClient] Generated signature: %x", signature)
+	log.Printf("[RelayClient] Waiting for auth result...")
 
-	// 构建响应
-	response := map[string]interface{}{
-		"type":      "response",
-		"client_id": c.config.SecretKey.Public().String(),
-		"signature": fmt.Sprintf("%x", signature),
-	}
-
-	// 序列化响应
-	responseData, err := json.Marshal(response)
-	if err != nil {
-		return fmt.Errorf("failed to marshal response: %w", err)
-	}
-
-	log.Printf("[RelayClient] Sending response")
-
-	// 发送响应
-	if err := c.Send(responseData); err != nil {
-		return fmt.Errorf("failed to send response: %w", err)
-	}
-
-	// 接收握手完成确认
 	confirmData, err := c.Receive()
 	if err != nil {
-		return fmt.Errorf("failed to receive handshake confirmation: %w", err)
+		return fmt.Errorf("failed to receive auth result: %w", err)
 	}
 
-	log.Printf("[RelayClient] Received confirmation: %x", confirmData)
-
-	// 解析确认
-	var confirm map[string]interface{}
-	if err := json.Unmarshal(confirmData, &confirm); err != nil {
-		return fmt.Errorf("failed to unmarshal confirmation: %w", err)
+	if len(confirmData) < 1 {
+		return fmt.Errorf("invalid auth result message: too short")
 	}
 
-	// 检查确认状态
-	status, ok := confirm["status"].(string)
-	if !ok || status != "ok" {
-		errorMsg := "handshake failed"
-		if msg, ok := confirm["error"].(string); ok {
-			errorMsg = msg
+	resultType := confirmData[0]
+	log.Printf("[RelayClient] Received auth result message type: 0x%02x", resultType)
+
+	switch resultType {
+	case MsgTypeServerAuthResult:
+		if len(confirmData) < 2 {
+			return fmt.Errorf("invalid auth result message: too short")
 		}
-		return fmt.Errorf(errorMsg)
+		status := confirmData[1]
+		log.Printf("[RelayClient] Auth result status: %d", status)
+		if status != 0 {
+			return fmt.Errorf("authentication failed with status: %d", status)
+		}
+	case MsgTypeServerDeniesAuth:
+		reason := string(confirmData[1:])
+		log.Printf("[RelayClient] Server denied authentication: %s", reason)
+		return fmt.Errorf("server denied authentication: %s", reason)
+	default:
+		return fmt.Errorf("expected ServerAuthResult (0x%02x) or ServerDeniesAuth (0x%02x), got 0x%02x", MsgTypeServerAuthResult, MsgTypeServerDeniesAuth, resultType)
 	}
 
 	log.Printf("[RelayClient] Handshake completed successfully")
@@ -296,49 +352,49 @@ func (c *Client) Receive() ([]byte, error) {
 
 // ConnectToPeer 通过中继连接到对等点
 func (c *Client) ConnectToPeer(peerId *crypto.EndpointId, alpn []byte) (interface{}, error) {
-	// 检查是否已连接到中继服务器
 	if c.conn == nil {
 		return nil, fmt.Errorf("not connected to relay server")
 	}
 
-	// 构建连接请求消息
-	request := ConnectRequest{
-		MsgType:  MsgTypeConnect,
-		PeerId:   peerId.String(),
-		ALPN:     alpn,
-		ClientId: c.config.SecretKey.Public().String(),
-	}
+	var request ConnectRequest
+	copy(request.PeerId[:], peerId.Bytes())
+	request.ALPN = alpn
+	copy(request.ClientId[:], c.config.SecretKey.Public().Bytes())
 
-	// 序列化请求消息
-	requestData, err := json.Marshal(request)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal connect request: %w", err)
-	}
+	alpnLen := len(request.ALPN)
+	requestData := make([]byte, 1+32+2+32+alpnLen)
+	requestData[0] = MsgTypeConnect
+	copy(requestData[1:33], request.PeerId[:])
+	binary.BigEndian.PutUint16(requestData[33:35], uint16(alpnLen))
+	copy(requestData[35:35+alpnLen], request.ALPN)
+	copy(requestData[35+alpnLen:67+alpnLen], request.ClientId[:])
 
-	// 发送请求到中继服务器
 	if err := c.Send(requestData); err != nil {
 		return nil, fmt.Errorf("failed to send connect request: %w", err)
 	}
 
-	// 接收并解析响应
 	responseData, err := c.Receive()
 	if err != nil {
 		return nil, fmt.Errorf("failed to receive connect response: %w", err)
 	}
 
-	// 解析响应消息
+	if len(responseData) < 18 {
+		return nil, fmt.Errorf("invalid connect response: expected at least 18 bytes, got %d", len(responseData))
+	}
+
+	responseType := responseData[0]
+	if responseType != MsgTypeConnectResponse {
+		return nil, fmt.Errorf("expected ConnectResponse (0x%02x), got 0x%02x", MsgTypeConnectResponse, responseType)
+	}
+
 	var response ConnectResponse
-	if err := json.Unmarshal(responseData, &response); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal connect response: %w", err)
-	}
+	response.Status = responseData[1]
+	copy(response.RelayId[:], responseData[2:18])
 
-	// 检查响应状态
 	if response.Status != 0 {
-		return nil, fmt.Errorf("relay connection failed: %s", response.Error)
+		return nil, fmt.Errorf("relay connection failed with status: %d", response.Status)
 	}
 
-	// 构建并返回连接对象
-	// 注意：这里返回一个简单的连接对象，实际项目中应该返回QUIC连接
 	connection := &RelayConnection{
 		client:  c,
 		peerId:  peerId,
@@ -352,104 +408,78 @@ func (c *Client) ConnectToPeer(peerId *crypto.EndpointId, alpn []byte) (interfac
 type RelayConnection struct {
 	client  *Client
 	peerId  *crypto.EndpointId
-	relayId string
+	relayId [16]byte
 	closed  bool
 }
 
 // RelayId 获取中继连接ID
-func (rc *RelayConnection) RelayId() string {
+func (rc *RelayConnection) RelayId() [16]byte {
 	return rc.relayId
 }
 
 // Send 通过中继发送数据
 func (rc *RelayConnection) Send(data []byte) error {
-	// 检查连接是否已关闭
 	if rc.closed {
 		return fmt.Errorf("relay connection is closed")
 	}
 
-	// 构建数据传输消息
-	dataMsg := map[string]interface{}{
-		"msg_type": MsgTypeData,
-		"relay_id": rc.relayId,
-		"data":     data,
-	}
+	dataLen := len(data)
+	msgData := make([]byte, 1+16+4+dataLen)
+	msgData[0] = MsgTypeData
+	copy(msgData[1:17], rc.relayId[:])
+	binary.BigEndian.PutUint32(msgData[17:21], uint32(dataLen))
+	copy(msgData[21:], data)
 
-	// 序列化消息
-	dataMsgBytes, err := json.Marshal(dataMsg)
-	if err != nil {
-		return fmt.Errorf("failed to marshal data message: %w", err)
-	}
-
-	// 发送数据
-	return rc.client.Send(dataMsgBytes)
+	return rc.client.Send(msgData)
 }
 
 // Receive 通过中继接收数据
 func (rc *RelayConnection) Receive() ([]byte, error) {
-	// 检查连接是否已关闭
 	if rc.closed {
 		return nil, fmt.Errorf("relay connection is closed")
 	}
 
-	// 接收数据
 	data, err := rc.client.Receive()
 	if err != nil {
 		return nil, err
 	}
 
-	// 解析消息
-	var msg map[string]interface{}
-	if err := json.Unmarshal(data, &msg); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal message: %w", err)
+	if len(data) < 1 {
+		return nil, fmt.Errorf("invalid message: too short")
 	}
 
-	// 检查消息类型
-	msgType, ok := msg["msg_type"].(float64)
-	if !ok {
-		return nil, fmt.Errorf("invalid message type")
+	msgType := data[0]
+	if msgType != MsgTypeData {
+		return nil, fmt.Errorf("unexpected message type: 0x%02x", msgType)
 	}
 
-	// 根据消息类型处理
-	switch int(msgType) {
-	case MsgTypeData:
-		// 提取数据
-		if dataBytes, ok := msg["data"].([]byte); ok {
-			return dataBytes, nil
-		}
-		return nil, fmt.Errorf("invalid data message format")
-	default:
-		return nil, fmt.Errorf("unexpected message type: %d", int(msgType))
+	if len(data) < 21 {
+		return nil, fmt.Errorf("invalid data message: too short")
 	}
+
+	dataLen := binary.BigEndian.Uint32(data[17:21])
+	if len(data) < 21+int(dataLen) {
+		return nil, fmt.Errorf("invalid data message: data length mismatch")
+	}
+
+	return data[21 : 21+dataLen], nil
 }
 
 // Close 关闭中继连接
 func (rc *RelayConnection) Close() error {
-	// 检查连接是否已关闭
 	if rc.closed {
 		return nil
 	}
 
-	// 构建关闭连接消息
-	closeMsg := map[string]interface{}{
-		"msg_type": 0x04, // 关闭连接消息类型
-		"relay_id": rc.relayId,
-	}
+	closeMsg := make([]byte, 1+16)
+	closeMsg[0] = MsgTypeClose
+	copy(closeMsg[1:17], rc.relayId[:])
 
-	// 序列化消息
-	closeMsgBytes, err := json.Marshal(closeMsg)
-	if err != nil {
-		return fmt.Errorf("failed to marshal close message: %w", err)
-	}
-
-	// 发送关闭请求
-	if err := rc.client.Send(closeMsgBytes); err != nil {
-		// 即使发送失败，也标记为关闭
+	if err := rc.client.Send(closeMsg); err != nil {
 		rc.closed = true
 		return err
 	}
 
-	// 标记连接为关闭
 	rc.closed = true
 	return nil
 }

@@ -17,6 +17,11 @@ type PublicKey struct {
 	key ed25519.PublicKey
 }
 
+// Signature 签名
+type Signature struct {
+	sig [64]byte
+}
+
 // EndpointId 端点ID，基于公钥
 type EndpointId struct {
 	key PublicKey
@@ -70,6 +75,26 @@ func (k *PublicKey) Bytes() []byte {
 // String 获取公钥的字符串表示
 func (k *PublicKey) String() string {
 	return hex.EncodeToString(k.key)
+}
+
+// Verify 验证签名
+func (k *PublicKey) Verify(message []byte, sig *Signature) bool {
+	return ed25519.Verify(k.key, message, sig.sig[:])
+}
+
+// NewSignature 从字节数组创建签名
+func NewSignature(b []byte) (*Signature, error) {
+	if len(b) != 64 {
+		return nil, errors.New("invalid signature length: expected 64, got " + string(rune(len(b))))
+	}
+	sig := &Signature{}
+	copy(sig.sig[:], b)
+	return sig, nil
+}
+
+// Bytes 获取签名的字节表示
+func (s *Signature) Bytes() [64]byte {
+	return s.sig
 }
 
 // EndpointIdFromPublicKey 从公钥创建端点ID

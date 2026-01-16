@@ -11,9 +11,9 @@ import (
 	"sync"
 	"time"
 
-	"github/yixinin/iroh-go/common"
-	"github/yixinin/iroh-go/crypto"
-	"github/yixinin/iroh-go/endpoint"
+	"github.com/yixinin/iroh-go/common"
+	"github.com/yixinin/iroh-go/crypto"
+	"github.com/yixinin/iroh-go/endpoint"
 
 	"github.com/quic-go/quic-go"
 )
@@ -230,7 +230,7 @@ func (t *Transport) getOrCreateConnection(ctx context.Context, remoteId *crypto.
 		Addrs: []common.TransportAddr{},
 	}
 
-	conn, err := t.endpoint.Connect(remoteAddr, t.alpn)
+	conn, err := t.endpoint.Connect(ctx, remoteAddr, t.alpn)
 	if err != nil {
 		return nil, err
 	}

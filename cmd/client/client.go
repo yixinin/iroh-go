@@ -9,9 +9,9 @@ import (
 	"net/http"
 	"time"
 
-	"github/yixinin/iroh-go/crypto"
-	"github/yixinin/iroh-go/endpoint"
-	"github/yixinin/iroh-go/irohttp"
+	"github.com/yixinin/iroh-go/crypto"
+	"github.com/yixinin/iroh-go/endpoint"
+	"github.com/yixinin/iroh-go/irohttp"
 )
 
 func main() {

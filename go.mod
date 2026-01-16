@@ -1,4 +1,4 @@
-module github/yixinin/iroh-go
+module github.com/yixinin/iroh-go
 
 go 1.21
 
@@ -7,6 +7,7 @@ require (
 	github.com/gorilla/websocket v1.5.1
 	github.com/grandcat/zeroconf v1.0.0
 	github.com/quic-go/quic-go v0.37.4
+	github.com/zeebo/blake3 v0.2.4
 )
 
 require (
@@ -32,11 +33,9 @@ require (
 	github.com/modern-go/reflect2 v1.0.2 // indirect
 	github.com/onsi/ginkgo/v2 v2.9.5 // indirect
 	github.com/pelletier/go-toml/v2 v2.0.8 // indirect
-	github.com/quic-go/qpack v0.4.0 // indirect
 	github.com/quic-go/qtls-go1-20 v0.3.1 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	github.com/ugorji/go/codec v1.2.11 // indirect
-	github.com/zeebo/blake3 v0.2.4 // indirect
 	golang.org/x/arch v0.3.0 // indirect
 	golang.org/x/crypto v0.14.0 // indirect
 	golang.org/x/exp v0.0.0-20230725012225-302865e7556b // indirect

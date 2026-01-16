@@ -3,8 +3,8 @@ package endpoint
 import (
 	"net"
 
-	"github/yixinin/iroh-go/common"
-	"github/yixinin/iroh-go/crypto"
+	"github.com/yixinin/iroh-go/common"
+	"github.com/yixinin/iroh-go/crypto"
 )
 
 // Builder 端点构建器

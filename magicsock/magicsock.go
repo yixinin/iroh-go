@@ -9,10 +9,10 @@ import (
 	"sync"
 	"time"
 
-	"github/yixinin/iroh-go/common"
-	"github/yixinin/iroh-go/crypto"
-	"github/yixinin/iroh-go/discovery"
-	"github/yixinin/iroh-go/relay"
+	"github.com/yixinin/iroh-go/common"
+	"github.com/yixinin/iroh-go/crypto"
+	"github.com/yixinin/iroh-go/discovery"
+	"github.com/yixinin/iroh-go/relay"
 
 	"github.com/quic-go/quic-go"
 )
@@ -45,6 +45,7 @@ type Connection struct {
 	conn     quic.Connection
 	remoteId *crypto.EndpointId
 	alpn     []byte
+	relay    *relay.RelayConnection
 }
 
 func (c *Connection) Conn() quic.Connection {
@@ -537,24 +538,29 @@ func (ms *MagicSock) tryRelayConnection(ctx context.Context, addr EndpointAddr, 
 	for i, relayClient := range ms.relayClients {
 		log.Printf("[MagicSock] Attempting relay connection via client %d", i+1)
 
-		relayConn, err := relayClient.ConnectToPeer(addr.Id, alpn)
-		if err != nil {
-			log.Printf("[MagicSock] Failed to connect to peer via relay client %d: %v", i+1, err)
-			continue
-		}
+		relayConn := relay.NewRelayConnection(relayClient, addr.Id)
+		relayConn.Start()
 
-		if rc, ok := relayConn.(*relay.RelayConnection); ok {
-			log.Printf("[MagicSock] Connected to peer %s via relay, relay ID: %s", addr.Id.String(), rc.RelayId())
+		log.Printf("[MagicSock] Relay connection established via %s", relayClient.URL())
 
-			conn, err := ms.dialQUIC(ctx, "127.0.0.1:0", addr.Id, alpn)
-			if err == nil {
-				log.Printf("[MagicSock] Successfully created QUIC connection via relay")
-				return conn, nil
-			}
-			log.Printf("[MagicSock] Failed to create QUIC connection via relay: %v", err)
-		} else {
-			log.Printf("[MagicSock] Unexpected relay connection type: %T", relayConn)
+		ms.remoteStatesMu.Lock()
+		actor, exists := ms.remoteStates[addr.Id.String()]
+		if !exists {
+			actor = ms.createRemoteStateActor(addr.Id)
+			ms.remoteStates[addr.Id.String()] = actor
+			actor.Start()
+			log.Printf("[MagicSock] Created remote state actor for %s", addr.Id.String())
 		}
+		ms.remoteStatesMu.Unlock()
+
+		actor.SetRelayConnection(relayConn)
+
+		return &Connection{
+			conn:     nil,
+			remoteId: addr.Id,
+			alpn:     alpn,
+			relay:    relayConn,
+		}, nil
 	}
 
 	log.Printf("[MagicSock] All %d relay connection attempts failed for endpoint %s", len(ms.relayClients), addr.Id.String())

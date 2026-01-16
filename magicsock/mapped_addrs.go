@@ -7,7 +7,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github/yixinin/iroh-go/crypto"
+	"github.com/yixinin/iroh-go/crypto"
 )
 
 const (

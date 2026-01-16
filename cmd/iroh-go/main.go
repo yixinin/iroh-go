@@ -5,7 +5,7 @@ import (
 	"log"
 	"net/http"
 
-	"github/yixinin/iroh-go/endpoint"
+	"github.com/yixinin/iroh-go/endpoint"
 
 	"github.com/gin-gonic/gin"
 )

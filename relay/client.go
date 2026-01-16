@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github/yixinin/iroh-go/crypto"
+	"github.com/yixinin/iroh-go/crypto"
 
 	"github.com/gorilla/websocket"
 )
@@ -209,11 +209,16 @@ func (c *Client) waitForAuthResult() error {
 
 	confirmData, err := c.Receive()
 	if err != nil {
+		log.Printf("[RelayClient] Failed to receive auth result: %v", err)
 		return fmt.Errorf("failed to receive auth result: %w", err)
 	}
 
+	log.Printf("[RelayClient] Received %d bytes from server", len(confirmData))
+	log.Printf("[RelayClient] Raw data: %x", confirmData)
+
 	resultMsg, err := ParseRelayMessage(confirmData)
 	if err != nil {
+		log.Printf("[RelayClient] Failed to parse auth result message: %v", err)
 		return fmt.Errorf("failed to parse auth result message: %w", err)
 	}
 
@@ -225,6 +230,7 @@ func (c *Client) waitForAuthResult() error {
 		log.Printf("[RelayClient] Server denied authentication: %s", result.Reason)
 		return fmt.Errorf("server denied authentication: %s", result.Reason)
 	default:
+		log.Printf("[RelayClient] Unexpected message type: %T", resultMsg)
 		return fmt.Errorf("expected ServerConfirmsAuth or ServerDeniesAuth, got %T", resultMsg)
 	}
 }

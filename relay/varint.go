@@ -3,7 +3,6 @@ package relay
 import (
 	"encoding/binary"
 	"io"
-	"math"
 )
 
 type VarInt uint64
@@ -58,16 +57,16 @@ func (v *VarInt) Decode(data []byte) (int, error) {
 	return vi.Size(), nil
 }
 func (v VarInt) Encode(buf []byte) int {
-	if v < VarInt(math.Pow(2, 6)) {
+	if v < 1<<6 {
 		buf[0] = byte(v)
 		return 1
 	}
-	if v < VarInt(math.Pow(2, 14)) {
+	if v < 1<<14 {
 		buf[0] = byte((v >> 8) | 0x40)
 		buf[1] = byte(v)
 		return 2
 	}
-	if v < VarInt(math.Pow(2, 30)) {
+	if v < 1<<30 {
 		buf[0] = byte((v >> 24) | 0x80)
 		buf[1] = byte((v >> 16) & 0xff)
 		buf[2] = byte((v >> 8) & 0xff)
@@ -85,16 +84,16 @@ func (v VarInt) Encode(buf []byte) int {
 	return 8
 }
 func (v VarInt) Size() int {
-	if v < VarInt(1<<6) {
+	if v < 1<<6 {
 		return 1
 	}
-	if v < VarInt(1<<14) {
+	if v < 1<<14 {
 		return 2
 	}
-	if v < VarInt(1<<30) {
+	if v < 1<<30 {
 		return 4
 	}
-	if v < VarInt(1<<62) {
+	if v < 1<<62 {
 		return 8
 	}
 	panic("malformed VarInt")

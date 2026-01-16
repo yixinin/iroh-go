@@ -5,7 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 
-	"github/yixinin/iroh-go/crypto"
+	"github.com/yixinin/iroh-go/crypto"
 )
 
 const (
@@ -180,8 +180,9 @@ func EncodeClientToRelayDatagram(dgram *ClientToRelayDatagram) ([]byte, error) {
 	buf[offset] = dgram.ECN
 	offset += 1
 	copy(buf[offset:], dgram.Data)
+	offset += len(dgram.Data)
 
-	return buf, nil
+	return buf[:offset], nil
 }
 
 func DecodeClientToRelayDatagram(data []byte) (*ClientToRelayDatagram, error) {
@@ -225,8 +226,9 @@ func EncodeClientToRelayDatagramBatch(batch *ClientToRelayDatagramBatch) ([]byte
 	binary.BigEndian.PutUint16(buf[offset:offset+2], batch.SegmentSize)
 	offset += 2
 	copy(buf[offset:], batch.Datagrams)
+	offset += len(batch.Datagrams)
 
-	return buf, nil
+	return buf[:offset], nil
 }
 
 func DecodeClientToRelayDatagramBatch(data []byte) (*ClientToRelayDatagramBatch, error) {
@@ -270,8 +272,9 @@ func EncodeRelayToClientDatagram(dgram *RelayToClientDatagram) ([]byte, error) {
 	buf[offset] = dgram.ECN
 	offset += 1
 	copy(buf[offset:], dgram.Data)
+	offset += len(dgram.Data)
 
-	return buf, nil
+	return buf[:offset], nil
 }
 
 func DecodeRelayToClientDatagram(data []byte) (*RelayToClientDatagram, error) {
@@ -315,8 +318,9 @@ func EncodeRelayToClientDatagramBatch(batch *RelayToClientDatagramBatch) ([]byte
 	binary.BigEndian.PutUint16(buf[offset:offset+2], batch.SegmentSize)
 	offset += 2
 	copy(buf[offset:], batch.Datagrams)
+	offset += len(batch.Datagrams)
 
-	return buf, nil
+	return buf[:offset], nil
 }
 
 func DecodeRelayToClientDatagramBatch(data []byte) (*RelayToClientDatagramBatch, error) {
@@ -356,8 +360,9 @@ func EncodeEndpointGone(eg *EndpointGone) ([]byte, error) {
 	offset := 0
 	offset += VarInt(FrameTypeEndpointGone).Encode(buf[offset:])
 	copy(buf[offset:offset+32], eg.PublicKey[:])
+	offset += 32
 
-	return buf, nil
+	return buf[:offset], nil
 }
 
 func DecodeEndpointGone(data []byte) (*EndpointGone, error) {
@@ -391,8 +396,9 @@ func EncodePing(ping *Ping) ([]byte, error) {
 	offset := 0
 	offset += VarInt(FrameTypePing).Encode(buf[offset:])
 	copy(buf[offset:offset+8], ping.Payload[:])
+	offset += 8
 
-	return buf, nil
+	return buf[:offset], nil
 }
 
 func DecodePing(data []byte) (*Ping, error) {
@@ -426,8 +432,9 @@ func EncodePong(pong *Pong) ([]byte, error) {
 	offset := 0
 	offset += VarInt(FrameTypePong).Encode(buf[offset:])
 	copy(buf[offset:offset+8], pong.Payload[:])
+	offset += 8
 
-	return buf, nil
+	return buf[:offset], nil
 }
 
 func DecodePong(data []byte) (*Pong, error) {
@@ -462,8 +469,9 @@ func EncodeHealth(health *Health) ([]byte, error) {
 	offset := 0
 	offset += VarInt(FrameTypeHealth).Encode(buf[offset:])
 	copy(buf[offset:], msgBytes)
+	offset += len(msgBytes)
 
-	return buf, nil
+	return buf[:offset], nil
 }
 
 func DecodeHealth(data []byte) (*Health, error) {
@@ -496,8 +504,9 @@ func EncodeRestarting(restarting *Restarting) ([]byte, error) {
 	binary.BigEndian.PutUint32(buf[offset:offset+4], restarting.ReconnectDelayMs)
 	offset += 4
 	binary.BigEndian.PutUint32(buf[offset:offset+4], restarting.TotalTryTimeMs)
+	offset += 4
 
-	return buf, nil
+	return buf[:offset], nil
 }
 
 func DecodeRestarting(data []byte) (*Restarting, error) {
@@ -533,8 +542,9 @@ func EncodeServerChallenge(sc *ServerChallenge) ([]byte, error) {
 	offset := 0
 	offset += VarInt(FrameTypeServerChallenge).Encode(buf[offset:])
 	copy(buf[offset:offset+16], sc.Challenge[:])
+	offset += 16
 
-	return buf, nil
+	return buf[:offset], nil
 }
 
 func DecodeServerChallenge(data []byte) (*ServerChallenge, error) {
@@ -563,15 +573,16 @@ func DecodeServerChallenge(data []byte) (*ServerChallenge, error) {
 }
 
 func EncodeClientAuth(ca *ClientAuth) ([]byte, error) {
-	buf := make([]byte, 1+VarInt(FrameTypeClientAuth).Size()+32+64)
+	buf := make([]byte, 1+32+64)
 
-	offset := 0
-	offset += VarInt(FrameTypeClientAuth).Encode(buf[offset:])
+	buf[0] = FrameTypeClientAuth
+	offset := 1
 	copy(buf[offset:offset+32], ca.PublicKey[:])
 	offset += 32
 	copy(buf[offset:offset+64], ca.Signature[:])
+	offset += 64
 
-	return buf, nil
+	return buf[:offset], nil
 }
 
 func DecodeClientAuth(data []byte) (*ClientAuth, error) {
@@ -607,7 +618,7 @@ func EncodeServerConfirmsAuth(_ *ServerConfirmsAuth) ([]byte, error) {
 	offset := 0
 	offset += VarInt(FrameTypeServerConfirmsAuth).Encode(buf[offset:])
 
-	return buf, nil
+	return buf[:offset], nil
 }
 
 func DecodeServerConfirmsAuth(data []byte) (*ServerConfirmsAuth, error) {
@@ -634,8 +645,9 @@ func EncodeServerDeniesAuth(sda *ServerDeniesAuth) ([]byte, error) {
 	offset := 0
 	offset += VarInt(FrameTypeServerDeniesAuth).Encode(buf[offset:])
 	copy(buf[offset:], reasonBytes)
+	offset += len(reasonBytes)
 
-	return buf, nil
+	return buf[:offset], nil
 }
 
 func DecodeServerDeniesAuth(data []byte) (*ServerDeniesAuth, error) {

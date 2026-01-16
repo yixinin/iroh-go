@@ -1,7 +1,7 @@
 package magicsock
 
 import (
-	"github/yixinin/iroh-go/crypto"
+	"github.com/yixinin/iroh-go/crypto"
 	"sync"
 )
 

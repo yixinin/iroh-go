@@ -1,7 +1,7 @@
 package common
 
 import (
-	"github/yixinin/iroh-go/crypto"
+	"github.com/yixinin/iroh-go/crypto"
 )
 
 // EndpointAddr 端点地址

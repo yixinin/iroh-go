@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github/yixinin/iroh-go/common"
-	"github/yixinin/iroh-go/crypto"
+	"github.com/yixinin/iroh-go/common"
+	"github.com/yixinin/iroh-go/crypto"
 )
 
 // 常量定义

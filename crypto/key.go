@@ -4,6 +4,7 @@ import (
 	"crypto/ed25519"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"strings"
 )
 
@@ -85,7 +86,7 @@ func (k *PublicKey) Verify(message []byte, sig *Signature) bool {
 // NewSignature 从字节数组创建签名
 func NewSignature(b []byte) (*Signature, error) {
 	if len(b) != 64 {
-		return nil, errors.New("invalid signature length: expected 64, got " + string(rune(len(b))))
+		return nil, fmt.Errorf("invalid signature length: expected 64, got %d", len(b))
 	}
 	sig := &Signature{}
 	copy(sig.sig[:], b)
@@ -139,4 +140,22 @@ func ParseEndpointId(s string) (*EndpointId, error) {
 	}
 
 	return &EndpointId{key: *pk}, nil
+}
+
+// FmtShort 获取端点ID的短字符串表示（前5字节）
+func (id *EndpointId) FmtShort() string {
+	return hex.EncodeToString(id.key.Bytes()[:5])
+}
+
+// AsBytes 获取端点ID的字节数组引用
+func (id *EndpointId) AsBytes() *[32]byte {
+	result := [32]byte{}
+	copy(result[:], id.key.Bytes())
+	return &result
+}
+
+// FromBytes 从字节数组创建端点ID
+func (id *EndpointId) FromBytes(b [32]byte) *EndpointId {
+	pk, _ := PublicKeyFromBytes(b[:])
+	return &EndpointId{key: *pk}
 }

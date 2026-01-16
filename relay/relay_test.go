@@ -3,7 +3,7 @@ package relay
 import (
 	"testing"
 
-	"github/yixinin/iroh-go/crypto"
+	"github.com/yixinin/iroh-go/crypto"
 )
 
 func TestVarIntEncoding(t *testing.T) {

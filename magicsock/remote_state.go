@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github/yixinin/iroh-go/crypto"
+	"github.com/yixinin/iroh-go/crypto"
 )
 
 type RemoteStateMessage interface {
@@ -22,6 +22,8 @@ type RemoteStateActor struct {
 
 	connections   map[uint64]*ConnectionState
 	connectionsMu sync.RWMutex
+
+	relayConnection interface{}
 
 	paths              *RemotePathState
 	lastHolepunch      *HolepunchAttempt
@@ -296,6 +298,20 @@ func (rsa *RemoteStateActor) RemoveConnection(connId uint64) {
 	defer rsa.connectionsMu.Unlock()
 
 	delete(rsa.connections, connId)
+}
+
+func (rsa *RemoteStateActor) SetRelayConnection(relayConn interface{}) {
+	rsa.mu.Lock()
+	defer rsa.mu.Unlock()
+
+	rsa.relayConnection = relayConn
+}
+
+func (rsa *RemoteStateActor) GetRelayConnection() interface{} {
+	rsa.mu.RLock()
+	defer rsa.mu.RUnlock()
+
+	return rsa.relayConnection
 }
 
 func (rsa *RemoteStateActor) AddPath(connId uint64, pathId PathId, addr Addr) {

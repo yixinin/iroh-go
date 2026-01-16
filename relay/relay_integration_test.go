@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github/yixinin/iroh-go/crypto"
+	"github.com/yixinin/iroh-go/crypto"
 )
 
 func TestRelayConnection(t *testing.T) {
@@ -46,7 +46,7 @@ func TestRelayConnectionWithStaging(t *testing.T) {
 	log.Printf("[Test] Secret key: %x", secretKey.Bytes())
 	log.Printf("[Test] Public key: %x", secretKey.Public().Bytes())
 
-	relayURL := "https://staging-use1-1.relay.iroh.network"
+	relayURL := "https://aps1-1.relay.n0.iroh-canary.iroh.link"
 	log.Printf("[Test] Connecting to staging relay: %s", relayURL)
 
 	config := NewConfig([]string{relayURL}, secretKey)

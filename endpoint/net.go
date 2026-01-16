@@ -3,7 +3,7 @@ package endpoint
 import (
 	"context"
 	"fmt"
-	"github/yixinin/iroh-go/crypto"
+	"github.com/yixinin/iroh-go/crypto"
 	"net"
 	"sync"
 	"time"

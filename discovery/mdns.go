@@ -10,8 +10,8 @@ import (
 
 	"github.com/grandcat/zeroconf"
 
-	"github/yixinin/iroh-go/common"
-	"github/yixinin/iroh-go/crypto"
+	"github.com/yixinin/iroh-go/common"
+	"github.com/yixinin/iroh-go/crypto"
 )
 
 // MdnsDiscovery mDNS发现服务

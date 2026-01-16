@@ -1,13 +1,13 @@
 package endpoint
 
 import (
+	"context"
 	"net"
 
-	"github/yixinin/iroh-go/common"
-	"github/yixinin/iroh-go/crypto"
-	"github/yixinin/iroh-go/magicsock"
-
-	"github.com/quic-go/quic-go"
+	"github.com/yixinin/iroh-go/common"
+	"github.com/yixinin/iroh-go/crypto"
+	"github.com/yixinin/iroh-go/discovery"
+	"github.com/yixinin/iroh-go/magicsock"
 )
 
 const (
@@ -27,13 +27,14 @@ type EndpointAddr struct {
 
 // Options 端点选项
 type Options struct {
-	RelayMode              common.RelayMode
-	SecretKey              *crypto.SecretKey
-	ALPNs                  [][]byte
-	RelayUrls              []string
-	DnsResolver            *net.Resolver
-	AddressFamilySelector  func() bool
-	InsecureSkipCertVerify bool
+	RelayMode               common.RelayMode
+	SecretKey               *crypto.SecretKey
+	ALPNs                   [][]byte
+	RelayUrls               []string
+	DnsResolver             *net.Resolver
+	AddressFamilySelector   func() bool
+	InsecureSkipCertVerify  bool
+	Discovery               discovery.Discovery
 }
 
 // Endpoint 控制iroh端点，与其他端点建立连接
@@ -52,12 +53,16 @@ func NewEndpoint(opts Options) (*Endpoint, error) {
 	if opts.AddressFamilySelector == nil {
 		opts.AddressFamilySelector = func() bool { return false }
 	}
+	if opts.Discovery == nil {
+		opts.Discovery = discovery.DefaultDiscovery()
+	}
 
 	// 创建魔法套接字（magicsock 会应用自己的默认值）
 	msockOpts := magicsock.Options{
 		RelayMode: common.RelayMode(opts.RelayMode),
 		SecretKey: opts.SecretKey,
 		ALPNs:     opts.ALPNs,
+		Discovery: opts.Discovery,
 	}
 	msock, err := magicsock.NewMagicSock(msockOpts)
 	if err != nil {
@@ -80,7 +85,7 @@ func NewEndpoint(opts Options) (*Endpoint, error) {
 }
 
 // Connect 连接到远程端点
-func (e *Endpoint) Connect(addr EndpointAddr, alpn []byte) (*Connection, error) {
+func (e *Endpoint) Connect(ctx context.Context, addr EndpointAddr, alpn []byte) (*Connection, error) {
 	// 转换为magicsock.EndpointAddr
 	msAddr := magicsock.EndpointAddr{
 		Id:    addr.Id,
@@ -148,27 +153,7 @@ func (e *Endpoint) Addr() EndpointAddr {
 	}
 }
 
-// Conn 获取连接的底层连接
-func (c *Connection) Conn() interface{} {
-	return c.conn
-}
-
-// RemoteId 获取远程端点ID
-func (c *Connection) RemoteId() *crypto.EndpointId {
-	return c.remoteId
-}
-
-// Conn 获取incoming连接的底层连接
-func (i *Incoming) Conn() quic.Connection {
-	return i.conn
-}
-
-// RemoteId 获取远程端点ID
-func (i *Incoming) RemoteId() *crypto.EndpointId {
-	return i.remoteId
-}
-
-// ALPN 获取ALPN
-func (i *Incoming) ALPN() []byte {
-	return i.alpn
+// SecretKey 获取密钥
+func (e *Endpoint) SecretKey() *crypto.SecretKey {
+	return e.secretKey
 }

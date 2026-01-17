@@ -7,7 +7,7 @@ require (
 	github.com/gorilla/websocket v1.5.1
 	github.com/grandcat/zeroconf v1.0.0
 	github.com/quic-go/quic-go v0.37.4
-	github.com/yixinin/postcard-go v0.0.0-20260116092919-a07e2e89ee3c
+	github.com/yixinin/postcard-go v0.0.0-20260117044021-50ee18f56aed
 	github.com/zeebo/blake3 v0.2.4
 )
 

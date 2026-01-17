@@ -220,10 +220,12 @@ func DecodeClientToRelayDatagram(data []byte) (*ClientToRelayDatagram, error) {
 }
 
 func EncodeClientToRelayDatagramBatch(batch *ClientToRelayDatagramBatch) ([]byte, error) {
-	buf := make([]byte, 1+postcard.VarInt(FrameTypeClientToRelayDatagramBatch).Size()+32+1+2+len(batch.Datagrams))
+	buf := make([]byte, 1+postcard.Varint(FrameTypeClientToRelayDatagramBatch).Size()+32+1+2+len(batch.Datagrams))
 
 	offset := 0
-	offset += postcard.VarInt(FrameTypeClientToRelayDatagramBatch).Encode(buf[offset:])
+	encoded := postcard.Varint(FrameTypeClientToRelayDatagramBatch).Encode()
+	copy(buf[offset:], encoded)
+	offset += len(encoded)
 	copy(buf[offset:offset+32], batch.DestPublicKey[:])
 	offset += 32
 	buf[offset] = batch.ECN
@@ -241,13 +243,13 @@ func DecodeClientToRelayDatagramBatch(data []byte) (*ClientToRelayDatagramBatch,
 		return nil, fmt.Errorf("data too short for ClientToRelayDatagramBatch")
 	}
 
-	var frameType postcard.VarInt
+	var frameType postcard.Varint
 	err := postcard.Deserialize(data, &frameType)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read frame type: %w", err)
 	}
 
-	if frameType != postcard.VarInt(FrameTypeClientToRelayDatagramBatch) {
+	if frameType != postcard.Varint(FrameTypeClientToRelayDatagramBatch) {
 		return nil, fmt.Errorf("unexpected frame type: %d", frameType)
 	}
 
@@ -269,10 +271,12 @@ func DecodeClientToRelayDatagramBatch(data []byte) (*ClientToRelayDatagramBatch,
 }
 
 func EncodeRelayToClientDatagram(dgram *RelayToClientDatagram) ([]byte, error) {
-	buf := make([]byte, 1+postcard.VarInt(FrameTypeRelayToClientDatagram).Size()+32+1+len(dgram.Data))
+	buf := make([]byte, 1+postcard.Varint(FrameTypeRelayToClientDatagram).Size()+32+1+len(dgram.Data))
 
 	offset := 0
-	offset += postcard.VarInt(FrameTypeRelayToClientDatagram).Encode(buf[offset:])
+	encoded := postcard.Varint(FrameTypeRelayToClientDatagram).Encode()
+	copy(buf[offset:], encoded)
+	offset += len(encoded)
 	copy(buf[offset:offset+32], dgram.SrcPublicKey[:])
 	offset += 32
 	buf[offset] = dgram.ECN
@@ -288,13 +292,13 @@ func DecodeRelayToClientDatagram(data []byte) (*RelayToClientDatagram, error) {
 		return nil, fmt.Errorf("data too short for RelayToClientDatagram")
 	}
 
-	var frameType postcard.VarInt
+	var frameType postcard.Varint
 	err := postcard.Deserialize(data, &frameType)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read frame type: %w", err)
 	}
 
-	if frameType != postcard.VarInt(FrameTypeRelayToClientDatagram) {
+	if frameType != postcard.Varint(FrameTypeRelayToClientDatagram) {
 		return nil, fmt.Errorf("unexpected frame type: %d", frameType)
 	}
 
@@ -314,10 +318,12 @@ func DecodeRelayToClientDatagram(data []byte) (*RelayToClientDatagram, error) {
 }
 
 func EncodeRelayToClientDatagramBatch(batch *RelayToClientDatagramBatch) ([]byte, error) {
-	buf := make([]byte, 1+postcard.VarInt(FrameTypeRelayToClientDatagramBatch).Size()+32+1+2+len(batch.Datagrams))
+	buf := make([]byte, 1+postcard.Varint(FrameTypeRelayToClientDatagramBatch).Size()+32+1+2+len(batch.Datagrams))
 
 	offset := 0
-	offset += postcard.VarInt(FrameTypeRelayToClientDatagramBatch).Encode(buf[offset:])
+	encoded := postcard.Varint(FrameTypeRelayToClientDatagramBatch).Encode()
+	copy(buf[offset:], encoded)
+	offset += len(encoded)
 	copy(buf[offset:offset+32], batch.SrcPublicKey[:])
 	offset += 32
 	buf[offset] = batch.ECN
@@ -335,13 +341,13 @@ func DecodeRelayToClientDatagramBatch(data []byte) (*RelayToClientDatagramBatch,
 		return nil, fmt.Errorf("data too short for RelayToClientDatagramBatch")
 	}
 
-	var frameType postcard.VarInt
+	var frameType postcard.Varint
 	err := postcard.Deserialize(data, &frameType)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read frame type: %w", err)
 	}
 
-	if frameType != postcard.VarInt(FrameTypeRelayToClientDatagramBatch) {
+	if frameType != postcard.Varint(FrameTypeRelayToClientDatagramBatch) {
 		return nil, fmt.Errorf("unexpected frame type: %d", frameType)
 	}
 
@@ -363,10 +369,12 @@ func DecodeRelayToClientDatagramBatch(data []byte) (*RelayToClientDatagramBatch,
 }
 
 func EncodeEndpointGone(eg *EndpointGone) ([]byte, error) {
-	buf := make([]byte, 1+postcard.VarInt(FrameTypeEndpointGone).Size()+32)
+	buf := make([]byte, 1+postcard.Varint(FrameTypeEndpointGone).Size()+32)
 
 	offset := 0
-	offset += postcard.VarInt(FrameTypeEndpointGone).Encode(buf[offset:])
+	encoded := postcard.Varint(FrameTypeEndpointGone).Encode()
+	copy(buf[offset:], encoded)
+	offset += len(encoded)
 	copy(buf[offset:offset+32], eg.PublicKey[:])
 	offset += 32
 
@@ -378,13 +386,13 @@ func DecodeEndpointGone(data []byte) (*EndpointGone, error) {
 		return nil, fmt.Errorf("data too short for EndpointGone")
 	}
 
-	var frameType postcard.VarInt
+	var frameType postcard.Varint
 	err := postcard.Deserialize(data, &frameType)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read frame type: %w", err)
 	}
 
-	if frameType != postcard.VarInt(FrameTypeEndpointGone) {
+	if frameType != postcard.Varint(FrameTypeEndpointGone) {
 		return nil, fmt.Errorf("unexpected frame type: %d", frameType)
 	}
 
@@ -400,10 +408,12 @@ func DecodeEndpointGone(data []byte) (*EndpointGone, error) {
 }
 
 func EncodePing(ping *Ping) ([]byte, error) {
-	buf := make([]byte, 1+postcard.VarInt(FrameTypePing).Size()+8)
+	buf := make([]byte, 1+postcard.Varint(FrameTypePing).Size()+8)
 
 	offset := 0
-	offset += postcard.VarInt(FrameTypePing).Encode(buf[offset:])
+	encoded := postcard.Varint(FrameTypePing).Encode()
+	copy(buf[offset:], encoded)
+	offset += len(encoded)
 	copy(buf[offset:offset+8], ping.Payload[:])
 	offset += 8
 
@@ -415,13 +425,13 @@ func DecodePing(data []byte) (*Ping, error) {
 		return nil, fmt.Errorf("data too short for Ping")
 	}
 
-	var frameType postcard.VarInt
+	var frameType postcard.Varint
 	err := postcard.Deserialize(data, &frameType)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read frame type: %w", err)
 	}
 
-	if frameType != postcard.VarInt(FrameTypePing) {
+	if frameType != postcard.Varint(FrameTypePing) {
 		return nil, fmt.Errorf("unexpected frame type: %d", frameType)
 	}
 
@@ -437,10 +447,12 @@ func DecodePing(data []byte) (*Ping, error) {
 }
 
 func EncodePong(pong *Pong) ([]byte, error) {
-	buf := make([]byte, 1+postcard.VarInt(FrameTypePong).Size()+8)
+	buf := make([]byte, 1+postcard.Varint(FrameTypePong).Size()+8)
 
 	offset := 0
-	offset += postcard.VarInt(FrameTypePong).Encode(buf[offset:])
+	encoded := postcard.Varint(FrameTypePong).Encode()
+	copy(buf[offset:], encoded)
+	offset += len(encoded)
 	copy(buf[offset:offset+8], pong.Payload[:])
 	offset += 8
 
@@ -452,13 +464,13 @@ func DecodePong(data []byte) (*Pong, error) {
 		return nil, fmt.Errorf("data too short for Pong")
 	}
 
-	var frameType postcard.VarInt
+	var frameType postcard.Varint
 	err := postcard.Deserialize(data, &frameType)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read frame type: %w", err)
 	}
 
-	if frameType != postcard.VarInt(FrameTypePong) {
+	if frameType != postcard.Varint(FrameTypePong) {
 		return nil, fmt.Errorf("unexpected frame type: %d", frameType)
 	}
 
@@ -475,10 +487,12 @@ func DecodePong(data []byte) (*Pong, error) {
 
 func EncodeHealth(health *Health) ([]byte, error) {
 	msgBytes := []byte(health.Message)
-	buf := make([]byte, 1+postcard.VarInt(FrameTypeHealth).Size()+len(msgBytes))
+	buf := make([]byte, 1+postcard.Varint(FrameTypeHealth).Size()+len(msgBytes))
 
 	offset := 0
-	offset += postcard.VarInt(FrameTypeHealth).Encode(buf[offset:])
+	encoded := postcard.Varint(FrameTypeHealth).Encode()
+	copy(buf[offset:], encoded)
+	offset += len(encoded)
 	copy(buf[offset:], msgBytes)
 	offset += len(msgBytes)
 
@@ -490,13 +504,13 @@ func DecodeHealth(data []byte) (*Health, error) {
 		return nil, fmt.Errorf("data too short for Health")
 	}
 
-	var frameType postcard.VarInt
+	var frameType postcard.Varint
 	err := postcard.Deserialize(data, &frameType)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read frame type: %w", err)
 	}
 
-	if frameType != postcard.VarInt(FrameTypeHealth) {
+	if frameType != postcard.Varint(FrameTypeHealth) {
 		return nil, fmt.Errorf("unexpected frame type: %d", frameType)
 	}
 
@@ -509,10 +523,12 @@ func DecodeHealth(data []byte) (*Health, error) {
 }
 
 func EncodeRestarting(restarting *Restarting) ([]byte, error) {
-	buf := make([]byte, 1+postcard.VarInt(FrameTypeRestarting).Size()+4+4)
+	frameTypeBytes := encodeQuicVarint(FrameTypeRestarting)
+	buf := make([]byte, len(frameTypeBytes)+4+4)
 
 	offset := 0
-	offset += postcard.VarInt(FrameTypeRestarting).Encode(buf[offset:])
+	copy(buf[offset:], frameTypeBytes)
+	offset += len(frameTypeBytes)
 	binary.BigEndian.PutUint32(buf[offset:offset+4], restarting.ReconnectDelayMs)
 	offset += 4
 	binary.BigEndian.PutUint32(buf[offset:offset+4], restarting.TotalTryTimeMs)
@@ -526,13 +542,13 @@ func DecodeRestarting(data []byte) (*Restarting, error) {
 		return nil, fmt.Errorf("data too short for Restarting")
 	}
 
-	var frameType postcard.VarInt
+	var frameType postcard.Varint
 	err := postcard.Deserialize(data, &frameType)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read frame type: %w", err)
 	}
 
-	if frameType != postcard.VarInt(FrameTypeRestarting) {
+	if frameType != postcard.Varint(FrameTypeRestarting) {
 		return nil, fmt.Errorf("unexpected frame type: %d", frameType)
 	}
 
@@ -550,10 +566,12 @@ func DecodeRestarting(data []byte) (*Restarting, error) {
 }
 
 func EncodeServerChallenge(sc *ServerChallenge) ([]byte, error) {
-	buf := make([]byte, 1+postcard.VarInt(FrameTypeServerChallenge).Size()+16)
+	frameTypeBytes := encodeQuicVarint(FrameTypeServerChallenge)
+	buf := make([]byte, len(frameTypeBytes)+16)
 
 	offset := 0
-	offset += postcard.VarInt(FrameTypeServerChallenge).Encode(buf[offset:])
+	copy(buf[offset:], frameTypeBytes)
+	offset += len(frameTypeBytes)
 	copy(buf[offset:offset+16], sc.Challenge[:])
 	offset += 16
 
@@ -565,17 +583,15 @@ func DecodeServerChallenge(data []byte) (*ServerChallenge, error) {
 		return nil, fmt.Errorf("data too short for ServerChallenge")
 	}
 
-	var frameType postcard.VarInt
-	err := postcard.Deserialize(data, &frameType)
+	frameType, offset, err := decodeQuicVarint(data)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read frame type: %w", err)
 	}
 
-	if frameType != postcard.VarInt(FrameTypeServerChallenge) {
+	if frameType != FrameTypeServerChallenge {
 		return nil, fmt.Errorf("unexpected frame type: %d", frameType)
 	}
 
-	offset := frameType.Size()
 	if len(data) < offset+16 {
 		return nil, fmt.Errorf("data too short for challenge")
 	}
@@ -586,13 +602,88 @@ func DecodeServerChallenge(data []byte) (*ServerChallenge, error) {
 	return sc, nil
 }
 
-func EncodeClientAuth(ca *ClientAuth) ([]byte, error) {
-	buf := make([]byte, 1+32+64)
+func encodeQuicVarint(value uint32) []byte {
+	if value < 64 {
+		return []byte{byte(value)}
+	} else if value < 16384 {
+		return []byte{
+			0x40 | byte(value>>8),
+			byte(value),
+		}
+	} else if value < 1073741824 {
+		return []byte{
+			0x80 | byte(value>>24),
+			byte(value >> 16),
+			byte(value >> 8),
+			byte(value),
+		}
+	} else {
+		return []byte{
+			0xc0,
+			0x00,
+			0x00,
+			0x00,
+			byte(value >> 24),
+			byte(value >> 16),
+			byte(value >> 8),
+			byte(value),
+		}
+	}
+}
 
-	buf[0] = FrameTypeClientAuth
-	offset := 1
+func decodeQuicVarint(data []byte) (uint32, int, error) {
+	if len(data) == 0 {
+		return 0, 0, fmt.Errorf("insufficient data for varint")
+	}
+
+	firstByte := data[0]
+	switch {
+	case firstByte < 0x40:
+		// 1-byte varint
+		return uint32(firstByte), 1, nil
+	case firstByte < 0x80:
+		// 2-byte varint
+		if len(data) < 2 {
+			return 0, 0, fmt.Errorf("insufficient data for 2-byte varint")
+		}
+		value := uint32(firstByte&0x3f)<<8 | uint32(data[1])
+		return value, 2, nil
+	case firstByte < 0xc0:
+		// 4-byte varint
+		if len(data) < 4 {
+			return 0, 0, fmt.Errorf("insufficient data for 4-byte varint")
+		}
+		value := uint32(firstByte&0x1f)<<24 | uint32(data[1])<<16 | uint32(data[2])<<8 | uint32(data[3])
+		return value, 4, nil
+	default:
+		// 8-byte varint
+		if len(data) < 8 {
+			return 0, 0, fmt.Errorf("insufficient data for 8-byte varint")
+		}
+		value := uint32(data[4])<<24 | uint32(data[5])<<16 | uint32(data[6])<<8 | uint32(data[7])
+		return value, 8, nil
+	}
+}
+
+func EncodeClientAuth(ca *ClientAuth) ([]byte, error) {
+	frameTypeBytes := encodeQuicVarint(FrameTypeClientAuth)
+	// Manually serialize ClientAuth to match server's expected format
+	// Server uses postcard with #[serde(with = "serde_bytes")] for signature
+	// This means signature is serialized as a varint length followed by the bytes
+	// But since signature is always 64 bytes, we can optimize
+	buf := make([]byte, len(frameTypeBytes)+32+postcard.Varint(64).Size()+64)
+
+	offset := 0
+	copy(buf[offset:], frameTypeBytes)
+	offset += len(frameTypeBytes)
+	// Serialize public key (32 bytes)
 	copy(buf[offset:offset+32], ca.PublicKey[:])
 	offset += 32
+	// Serialize signature with varint length prefix (postcard format)
+	sigLength := postcard.Varint(64)
+	sigLengthBytes := sigLength.Encode()
+	copy(buf[offset:], sigLengthBytes)
+	offset += len(sigLengthBytes)
 	copy(buf[offset:offset+64], ca.Signature[:])
 	offset += 64
 
@@ -604,13 +695,13 @@ func DecodeClientAuth(data []byte) (*ClientAuth, error) {
 		return nil, fmt.Errorf("data too short for ClientAuth")
 	}
 
-	var frameType postcard.VarInt
+	var frameType postcard.Varint
 	err := postcard.Deserialize(data, &frameType)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read frame type: %w", err)
 	}
 
-	if frameType != postcard.VarInt(FrameTypeClientAuth) {
+	if frameType != postcard.Varint(FrameTypeClientAuth) {
 		return nil, fmt.Errorf("unexpected frame type: %d", frameType)
 	}
 
@@ -628,10 +719,12 @@ func DecodeClientAuth(data []byte) (*ClientAuth, error) {
 }
 
 func EncodeServerConfirmsAuth(_ *ServerConfirmsAuth) ([]byte, error) {
-	buf := make([]byte, 1+postcard.VarInt(FrameTypeServerConfirmsAuth).Size())
+	buf := make([]byte, 1+postcard.Varint(FrameTypeServerConfirmsAuth).Size())
 
 	offset := 0
-	offset += postcard.VarInt(FrameTypeServerConfirmsAuth).Encode(buf[offset:])
+	encoded := postcard.Varint(FrameTypeServerConfirmsAuth).Encode()
+	copy(buf[offset:], encoded)
+	offset += len(encoded)
 
 	return buf[:offset], nil
 }
@@ -641,13 +734,13 @@ func DecodeServerConfirmsAuth(data []byte) (*ServerConfirmsAuth, error) {
 		return nil, fmt.Errorf("data too short for ServerConfirmsAuth")
 	}
 
-	var frameType postcard.VarInt
+	var frameType postcard.Varint
 	err := postcard.Deserialize(data, &frameType)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read frame type: %w", err)
 	}
 
-	if frameType != postcard.VarInt(FrameTypeServerConfirmsAuth) {
+	if frameType != postcard.Varint(FrameTypeServerConfirmsAuth) {
 		return nil, fmt.Errorf("unexpected frame type: %d", frameType)
 	}
 
@@ -656,10 +749,12 @@ func DecodeServerConfirmsAuth(data []byte) (*ServerConfirmsAuth, error) {
 
 func EncodeServerDeniesAuth(sda *ServerDeniesAuth) ([]byte, error) {
 	reasonBytes := []byte(sda.Reason)
-	buf := make([]byte, 1+postcard.VarInt(FrameTypeServerDeniesAuth).Size()+len(reasonBytes))
+	buf := make([]byte, 1+postcard.Varint(FrameTypeServerDeniesAuth).Size()+len(reasonBytes))
 
 	offset := 0
-	offset += postcard.VarInt(FrameTypeServerDeniesAuth).Encode(buf[offset:])
+	encoded := postcard.Varint(FrameTypeServerDeniesAuth).Encode()
+	copy(buf[offset:], encoded)
+	offset += len(encoded)
 	copy(buf[offset:], reasonBytes)
 	offset += len(reasonBytes)
 
@@ -671,13 +766,13 @@ func DecodeServerDeniesAuth(data []byte) (*ServerDeniesAuth, error) {
 		return nil, fmt.Errorf("data too short for ServerDeniesAuth")
 	}
 
-	var frameType postcard.VarInt
+	var frameType postcard.Varint
 	err := postcard.Deserialize(data, &frameType)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read frame type: %w", err)
 	}
 
-	if frameType != postcard.VarInt(FrameTypeServerDeniesAuth) {
+	if frameType != postcard.Varint(FrameTypeServerDeniesAuth) {
 		return nil, fmt.Errorf("unexpected frame type: %d", frameType)
 	}
 
@@ -693,38 +788,38 @@ func ParseRelayMessage(data []byte) (interface{}, error) {
 		return nil, fmt.Errorf("data too short")
 	}
 
-	var frameType postcard.VarInt
+	var frameType postcard.Varint
 	err := postcard.Deserialize(data, &frameType)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read frame type: %w", err)
 	}
 
 	switch frameType {
-	case postcard.VarInt(FrameTypeServerChallenge):
+	case postcard.Varint(FrameTypeServerChallenge):
 		return DecodeServerChallenge(data)
-	case postcard.VarInt(FrameTypeClientAuth):
+	case postcard.Varint(FrameTypeClientAuth):
 		return DecodeClientAuth(data)
-	case postcard.VarInt(FrameTypeServerConfirmsAuth):
+	case postcard.Varint(FrameTypeServerConfirmsAuth):
 		return DecodeServerConfirmsAuth(data)
-	case postcard.VarInt(FrameTypeServerDeniesAuth):
+	case postcard.Varint(FrameTypeServerDeniesAuth):
 		return DecodeServerDeniesAuth(data)
-	case postcard.VarInt(FrameTypeClientToRelayDatagram):
+	case postcard.Varint(FrameTypeClientToRelayDatagram):
 		return DecodeClientToRelayDatagram(data)
-	case postcard.VarInt(FrameTypeClientToRelayDatagramBatch):
+	case postcard.Varint(FrameTypeClientToRelayDatagramBatch):
 		return DecodeClientToRelayDatagramBatch(data)
-	case postcard.VarInt(FrameTypeRelayToClientDatagram):
+	case postcard.Varint(FrameTypeRelayToClientDatagram):
 		return DecodeRelayToClientDatagram(data)
-	case postcard.VarInt(FrameTypeRelayToClientDatagramBatch):
+	case postcard.Varint(FrameTypeRelayToClientDatagramBatch):
 		return DecodeRelayToClientDatagramBatch(data)
-	case postcard.VarInt(FrameTypeEndpointGone):
+	case postcard.Varint(FrameTypeEndpointGone):
 		return DecodeEndpointGone(data)
-	case postcard.VarInt(FrameTypePing):
+	case postcard.Varint(FrameTypePing):
 		return DecodePing(data)
-	case postcard.VarInt(FrameTypePong):
+	case postcard.Varint(FrameTypePong):
 		return DecodePong(data)
-	case postcard.VarInt(FrameTypeHealth):
+	case postcard.Varint(FrameTypeHealth):
 		return DecodeHealth(data)
-	case postcard.VarInt(FrameTypeRestarting):
+	case postcard.Varint(FrameTypeRestarting):
 		return DecodeRestarting(data)
 	default:
 		return nil, fmt.Errorf("unknown frame type: %d", frameType)

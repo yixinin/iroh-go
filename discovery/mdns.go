@@ -122,11 +122,7 @@ func (d *MdnsDiscovery) Discover(id *crypto.EndpointId) (<-chan *common.Endpoint
 
 		for entry := range entries {
 			// 解析TXT记录
-			data := &common.EndpointData{
-				Id:       &crypto.EndpointId{},
-				Addrs:    []common.TransportAddr{},
-				RelayURL: "",
-			}
+			var data *common.EndpointData
 
 			// 解析TXT记录
 			for _, txt := range entry.Text {
@@ -150,9 +146,23 @@ func (d *MdnsDiscovery) Discover(id *crypto.EndpointId) (<-chan *common.Endpoint
 						log.Printf("Failed to create public key: %v", err)
 						continue
 					}
-					data.Id = crypto.EndpointIdFromPublicKey(publicKey)
+					if data == nil {
+						data = &common.EndpointData{
+							Id:       crypto.EndpointIdFromPublicKey(publicKey),
+							Addrs:    []common.TransportAddr{},
+							RelayURL: "",
+						}
+					} else {
+						data.Id = crypto.EndpointIdFromPublicKey(publicKey)
+					}
 				case "relay":
-					data.RelayURL = value
+					if data == nil {
+						data = &common.EndpointData{
+							RelayURL: value,
+						}
+					} else {
+						data.RelayURL = value
+					}
 				case "addr":
 					// 解析地址
 					addrStrs := strings.Split(value, " ")
@@ -163,9 +173,20 @@ func (d *MdnsDiscovery) Discover(id *crypto.EndpointId) (<-chan *common.Endpoint
 						addr := &common.TransportAddrIp{
 							Addr: addrStr,
 						}
-						data.Addrs = append(data.Addrs, addr)
+						if data == nil {
+							data = &common.EndpointData{
+								Addrs: []common.TransportAddr{addr},
+							}
+						} else {
+							data.Addrs = append(data.Addrs, addr)
+						}
 					}
 				}
+			}
+
+			// 检查是否成功解析了数据
+			if data == nil || data.Id == nil {
+				continue
 			}
 
 			// 检查是否是目标端点

@@ -23,9 +23,11 @@ type Signature struct {
 	sig [64]byte
 }
 
-// EndpointId 端点ID，基于公钥
-type EndpointId struct {
-	key PublicKey
+// EndpointId 端点ID，基于公钥（与 Rust 版本保持一致，EndpointId 就是 PublicKey）
+type EndpointId = PublicKey
+
+func (id *EndpointId) PublicKey() ed25519.PublicKey {
+	return id.key
 }
 
 // NewSecretKey 生成新的密钥
@@ -48,6 +50,11 @@ func SecretKeyFromBytes(b []byte) (*SecretKey, error) {
 // Public 获取公钥
 func (k *SecretKey) Public() *PublicKey {
 	return &PublicKey{key: k.key.Public().(ed25519.PublicKey)}
+}
+
+// PrivateKey 获取 ed25519 私钥
+func (k *SecretKey) PrivateKey() ed25519.PrivateKey {
+	return k.key
 }
 
 // Bytes 获取密钥的字节表示
@@ -73,6 +80,11 @@ func (k *PublicKey) Bytes() []byte {
 	return k.key
 }
 
+// Ed25519PublicKey 获取底层的 ed25519 公钥
+func (k *PublicKey) Ed25519PublicKey() ed25519.PublicKey {
+	return k.key
+}
+
 // String 获取公钥的字符串表示
 func (k *PublicKey) String() string {
 	return hex.EncodeToString(k.key)
@@ -81,6 +93,11 @@ func (k *PublicKey) String() string {
 // Verify 验证签名
 func (k *PublicKey) Verify(message []byte, sig *Signature) bool {
 	return ed25519.Verify(k.key, message, sig.sig[:])
+}
+
+// FmtShort 获取公钥的短字符串表示（前5字节）
+func (k *PublicKey) FmtShort() string {
+	return hex.EncodeToString(k.key[:5])
 }
 
 // NewSignature 从字节数组创建签名
@@ -100,22 +117,7 @@ func (s *Signature) Bytes() [64]byte {
 
 // EndpointIdFromPublicKey 从公钥创建端点ID
 func EndpointIdFromPublicKey(pk *PublicKey) *EndpointId {
-	return &EndpointId{key: *pk}
-}
-
-// PublicKey 获取端点ID的公钥
-func (id *EndpointId) PublicKey() *PublicKey {
-	return &id.key
-}
-
-// String 获取端点ID的字符串表示
-func (id *EndpointId) String() string {
-	return id.key.String()
-}
-
-// Bytes 获取端点ID的字节表示
-func (id *EndpointId) Bytes() []byte {
-	return id.key.Bytes()
+	return pk
 }
 
 // ParseEndpointId 从字符串解析端点ID
@@ -139,23 +141,5 @@ func ParseEndpointId(s string) (*EndpointId, error) {
 		return nil, err
 	}
 
-	return &EndpointId{key: *pk}, nil
-}
-
-// FmtShort 获取端点ID的短字符串表示（前5字节）
-func (id *EndpointId) FmtShort() string {
-	return hex.EncodeToString(id.key.Bytes()[:5])
-}
-
-// AsBytes 获取端点ID的字节数组引用
-func (id *EndpointId) AsBytes() *[32]byte {
-	result := [32]byte{}
-	copy(result[:], id.key.Bytes())
-	return &result
-}
-
-// FromBytes 从字节数组创建端点ID
-func (id *EndpointId) FromBytes(b [32]byte) *EndpointId {
-	pk, _ := PublicKeyFromBytes(b[:])
-	return &EndpointId{key: *pk}
+	return pk, nil
 }

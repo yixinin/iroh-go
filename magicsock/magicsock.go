@@ -2,9 +2,14 @@ package magicsock
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/tls"
+	"crypto/x509"
+	"encoding/base32"
+	"errors"
 	"fmt"
 	"log"
+	"math/big"
 	"net"
 	"sync"
 	"time"
@@ -424,7 +429,6 @@ func (ms *MagicSock) Connect(addr EndpointAddr, alpn []byte) (*Connection, error
 	defer cancel()
 
 	if ms.discovery != nil {
-		log.Printf("[MagicSock] Starting discovery for endpoint %s", addr.Id.String())
 		if err := ms.discoverAndConnect(ctx, addr, alpn); err != nil {
 			log.Printf("[MagicSock] Discovery failed: %v, trying direct connection", err)
 		} else {
@@ -575,7 +579,7 @@ func (ms *MagicSock) dialQUIC(ctx context.Context, addr string, remoteId *crypto
 		KeepAlivePeriod: defaultKeepAlive,
 	}
 
-	tlsConfig := generateTLSConfig(ms.secretKey, [][]byte{alpn})
+	tlsConfig := generateClientTLSConfig(ms.secretKey, [][]byte{alpn}, remoteId)
 
 	conn, err := quic.DialAddr(ctx, addr, tlsConfig, quicConfig)
 	if err != nil {
@@ -712,8 +716,86 @@ func generateTLSConfig(secretKey *crypto.SecretKey, alpns [][]byte) *tls.Config 
 	}
 
 	return &tls.Config{
-		NextProtos: nextProtos,
+		NextProtos:         nextProtos,
+		MinVersion:         tls.VersionTLS13,
+		MaxVersion:         tls.VersionTLS13,
+		InsecureSkipVerify: false,
+		Certificates:       []tls.Certificate{generateCertificate(secretKey)},
+		ClientAuth:         tls.RequireAnyClientCert,
+		VerifyPeerCertificate: func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
+			if len(rawCerts) == 0 {
+				return errors.New("no certificates provided")
+			}
+			return nil
+		},
 	}
+}
+
+func generateCertificate(secretKey *crypto.SecretKey) tls.Certificate {
+	privKey := secretKey.PrivateKey()
+	pubKey := secretKey.Public().Ed25519PublicKey()
+
+	serialNumber := big.NewInt(1)
+
+	certDER := x509.Certificate{
+		SerialNumber:          serialNumber,
+		NotBefore:             time.Now(),
+		NotAfter:              time.Now().AddDate(10, 0, 0),
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment | x509.KeyUsageCertSign,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+	}
+
+	certBytes, err := x509.CreateCertificate(nil, &certDER, &certDER, pubKey, privKey)
+	if err != nil {
+		panic(fmt.Sprintf("failed to create certificate: %v", err))
+	}
+
+	return tls.Certificate{
+		Certificate: [][]byte{certBytes},
+		PrivateKey:  privKey,
+		Leaf:        &certDER,
+	}
+}
+
+func generateClientTLSConfig(secretKey *crypto.SecretKey, alpns [][]byte, remoteId *crypto.EndpointId) *tls.Config {
+	nextProtos := make([]string, len(alpns))
+	for i, alpn := range alpns {
+		nextProtos[i] = string(alpn)
+	}
+
+	config := &tls.Config{
+		NextProtos:         nextProtos,
+		MinVersion:         tls.VersionTLS13,
+		MaxVersion:         tls.VersionTLS13,
+		InsecureSkipVerify: false,
+		ServerName:         encodeEndpointIdAsServerName(remoteId),
+		Certificates:       []tls.Certificate{generateCertificate(secretKey)},
+		VerifyPeerCertificate: func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
+			if len(rawCerts) == 0 {
+				return errors.New("no certificates provided")
+			}
+			cert, err := x509.ParseCertificate(rawCerts[0])
+			if err != nil {
+				return fmt.Errorf("failed to parse certificate: %w", err)
+			}
+			certPubKey, ok := cert.PublicKey.(ed25519.PublicKey)
+			if !ok {
+				return errors.New("certificate public key is not ed25519")
+			}
+			if !certPubKey.Equal(remoteId.Ed25519PublicKey()) {
+				return errors.New("certificate public key does not match remote endpoint ID")
+			}
+			return nil
+		},
+	}
+	return config
+}
+
+func encodeEndpointIdAsServerName(endpointId *crypto.EndpointId) string {
+	encoded := base32.StdEncoding.EncodeToString(endpointId.Bytes())
+	return fmt.Sprintf("%s.iroh.invalid", encoded)
 }
 
 func (ms *MagicSock) Resolve(ctx context.Context, id *crypto.EndpointId) (<-chan *DiscoveryItem, error) {

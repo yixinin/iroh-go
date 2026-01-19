@@ -17,17 +17,17 @@ const (
 )
 
 type RelayConnection struct {
-	client      *Client
-	remoteId    *crypto.EndpointId
-	sendQueue   chan []byte
-	recvQueue   chan *RelayToClientDatagram
-	closeChan   chan struct{}
-	closeOnce   sync.Once
-	closed      bool
-	closeMutex  sync.RWMutex
-	ctx         context.Context
-	cancel      context.CancelFunc
-	wg          sync.WaitGroup
+	client     *Client
+	remoteId   *crypto.EndpointId
+	sendQueue  chan []byte
+	recvQueue  chan *RelayToClientDatagram
+	closeChan  chan struct{}
+	closeOnce  sync.Once
+	closed     bool
+	closeMutex sync.RWMutex
+	ctx        context.Context
+	cancel     context.CancelFunc
+	wg         sync.WaitGroup
 }
 
 func NewRelayConnection(client *Client, remoteId *crypto.EndpointId) *RelayConnection {
@@ -193,7 +193,7 @@ func (rc *RelayConnection) SendDatagram(data []byte) error {
 	}
 	rc.closeMutex.RUnlock()
 
-	destPk := rc.remoteId.PublicKey().Bytes()
+	destPk := rc.remoteId.PublicKey()
 	var destPkArray [32]byte
 	copy(destPkArray[:], destPk)
 

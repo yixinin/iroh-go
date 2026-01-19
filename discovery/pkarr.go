@@ -221,7 +221,7 @@ func (d *PkarrDiscovery) Discover(id *crypto.EndpointId) (<-chan *common.Endpoin
 
 			// 验证签名
 			publicKey := data.Id.PublicKey()
-			if !ed25519.Verify(publicKey.Bytes(), []byte(signData), signature) {
+			if !ed25519.Verify(publicKey, []byte(signData), signature) {
 				log.Printf("Invalid signature for endpoint: %s", data.Id.String())
 				return
 			}

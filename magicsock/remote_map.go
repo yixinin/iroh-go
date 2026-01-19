@@ -46,8 +46,11 @@ func (rm *RemoteMap) Delete(id *crypto.EndpointId) {
 // Iterate 遍历所有远程节点
 func (rm *RemoteMap) Iterate(f func(*crypto.EndpointId, *RemoteInfo) bool) {
 	rm.remotes.Range(func(key, value interface{}) bool {
-		id := &crypto.EndpointId{}
-		// TODO: 从key解析id
+		idStr := key.(string)
+		id, err := crypto.ParseEndpointId(idStr)
+		if err != nil {
+			return true
+		}
 		info := value.(*RemoteInfo)
 		return f(id, info)
 	})

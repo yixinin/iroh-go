@@ -85,7 +85,6 @@ func (rc *RelayConnection) receiveLoop() {
 			return
 		case <-rc.closeChan:
 			return
-		default:
 		}
 
 		msg, err := rc.client.ReceiveMessage()
@@ -139,11 +138,11 @@ func (rc *RelayConnection) receiveLoop() {
 			time.Sleep(time.Duration(m.ReconnectDelayMs) * time.Millisecond)
 			rc.Close()
 			return
-		case *Pong, *Ping:
+		case *Pong:
 			rc.lastPongMu.Lock()
 			rc.lastPong = time.Now()
 			rc.lastPongMu.Unlock()
-			log.Printf("[RelayConnection] Received Ping/Pong")
+			log.Printf("[RelayConnection] Received Pong")
 		}
 	}
 }

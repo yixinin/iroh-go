@@ -139,13 +139,12 @@ func (c *Client) Connect() error {
 
 	log.Printf("[RelayClient] WebSocket connection established successfully")
 
-	conn.SetPingHandler(func(appData string) error {
-		log.Printf("[RelayClient] Received WebSocket ping, sending pong")
-		return conn.WriteControl(websocket.PongMessage, []byte(appData), time.Now().Add(5*time.Second))
-	})
+	conn.SetPingHandler(c.handlePing)
 
+	conn.SetReadDeadline(time.Now().Add(30 * time.Second))
 	conn.SetPongHandler(func(appData string) error {
-		log.Printf("[RelayClient] Received WebSocket pong")
+		conn.SetReadDeadline(time.Now().Add(30 * time.Second))
+		log.Printf("[Relay WebSocket] Received WebSocket pong")
 		return nil
 	})
 
@@ -163,6 +162,11 @@ func (c *Client) Connect() error {
 	log.Printf("[RelayClient] Handshake completed successfully")
 
 	return nil
+}
+
+func (c *Client) handlePing(appData string) error {
+	log.Printf("[Relay WebSocket] Received WebSocket ping, sending pong")
+	return c.conn.WriteControl(websocket.PongMessage, []byte(appData), time.Now().Add(5*time.Second))
 }
 
 func (c *Client) handshake() error {
@@ -327,6 +331,8 @@ func (c *Client) ReceiveMessage() (interface{}, error) {
 
 	switch m := msg.(type) {
 	case *Ping:
+		log.Printf("[Relay WebSocket] Received Ping: %x, sending Pong...", m.Payload)
+		c.conn.SetReadDeadline(time.Now().Add(30 * time.Second))
 		pong := &Pong{Payload: m.Payload}
 		pongData, err := EncodePong(pong)
 		if err != nil {

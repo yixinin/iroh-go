@@ -327,7 +327,6 @@ func (c *Client) ReceiveMessage() (interface{}, error) {
 
 	switch m := msg.(type) {
 	case *Ping:
-		log.Printf("[RelayClient] Received Ping, sending Pong")
 		pong := &Pong{Payload: m.Payload}
 		pongData, err := EncodePong(pong)
 		if err != nil {
@@ -337,12 +336,9 @@ func (c *Client) ReceiveMessage() (interface{}, error) {
 			return nil, fmt.Errorf("failed to send pong: %w", err)
 		}
 
-		// Ignore Ping messages, continue receiving
-		return c.ReceiveMessage()
+		return msg, nil
 	case *Pong:
-		log.Printf("[RelayClient] Received Pong")
-		// Ignore Pong messages, continue receiving
-		return c.ReceiveMessage()
+		return msg, nil
 	default:
 		return msg, nil
 	}

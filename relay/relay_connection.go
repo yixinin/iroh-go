@@ -139,6 +139,11 @@ func (rc *RelayConnection) receiveLoop() {
 			time.Sleep(time.Duration(m.ReconnectDelayMs) * time.Millisecond)
 			rc.Close()
 			return
+		case *Pong, *Ping:
+			rc.lastPongMu.Lock()
+			rc.lastPong = time.Now()
+			rc.lastPongMu.Unlock()
+			log.Printf("[RelayConnection] Received Ping/Pong")
 		}
 	}
 }

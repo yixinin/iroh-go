@@ -271,8 +271,13 @@ func writeHTTPRequest(req *http.Request, path string, stream quic.Stream) error 
 		fmt.Fprintf(&buf, "\r\n")
 	}
 
-	_, err := stream.Write(buf.Bytes())
-	return err
+	n, err := stream.Write(buf.Bytes())
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("[irohttp] Wrote %d bytes to stream\n", n)
+	return nil
 }
 
 func readHTTPResponse(req *http.Request, stream quic.Stream) (*http.Response, error) {

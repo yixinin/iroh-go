@@ -309,12 +309,11 @@ func (c *Client) SendDatagramBatch(dest *crypto.PublicKey, ecn uint8, segmentSiz
 		SegmentSize:   segmentSize,
 		Datagrams:     batched,
 	}
-
+	log.Printf("[Relay WebSocket] Sending DatagramBatch: %+v", *dgramBatch)
 	msg, err := EncodeClientToRelayDatagramBatch(dgramBatch)
 	if err != nil {
 		return fmt.Errorf("failed to encode datagram batch: %w", err)
 	}
-
 	return c.Send(msg)
 }
 

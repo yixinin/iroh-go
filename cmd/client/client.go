@@ -16,7 +16,7 @@ import (
 
 func main() {
 	// 解析命令行参数
-	urlFlag := flag.String("url", "iroh://2b29fb1bdae8449419394ffc951f1678fff90231b1d912f9c44462de15f08b8a/health", "目标 URL")
+	urlFlag := flag.String("url", "iroh://8612dcd73af3c61820292d5b5d54b130e72b1f04528a01d1b5a7438b0c7268bc/health", "目标 URL")
 	methodFlag := flag.String("method", "GET", "HTTP 方法")
 	dataFlag := flag.String("data", "", "请求体数据")
 	timeoutFlag := flag.Duration("timeout", 30*time.Second, "请求超时时间")

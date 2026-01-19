@@ -27,14 +27,14 @@ type EndpointAddr struct {
 
 // Options 端点选项
 type Options struct {
-	RelayMode               common.RelayMode
-	SecretKey               *crypto.SecretKey
-	ALPNs                   [][]byte
-	RelayUrls               []string
-	DnsResolver             *net.Resolver
-	AddressFamilySelector   func() bool
-	InsecureSkipCertVerify  bool
-	Discovery               discovery.Discovery
+	RelayMode              common.RelayMode
+	SecretKey              *crypto.SecretKey
+	ALPNs                  [][]byte
+	RelayUrls              []string
+	DnsResolver            *net.Resolver
+	AddressFamilySelector  func() bool
+	InsecureSkipCertVerify bool
+	Discovery              discovery.Discovery
 }
 
 // Endpoint 控制iroh端点，与其他端点建立连接
@@ -96,6 +96,12 @@ func (e *Endpoint) Connect(ctx context.Context, addr EndpointAddr, alpn []byte) 
 	msConn, err := e.msock.Connect(msAddr, alpn)
 	if err != nil {
 		return nil, err
+	}
+
+	// 检查是否为 relay 连接
+	if msConn.Conn() == nil {
+		// 返回 relay 连接
+		return NewRelayConnection(msConn.Relay(), msConn.RemoteId(), msConn.ALPN()), nil
 	}
 
 	// 转换为endpoint.Connection

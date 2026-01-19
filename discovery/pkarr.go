@@ -94,14 +94,14 @@ func (d *PkarrDiscovery) Publish(data *common.EndpointData) error {
 	// 序列化数据
 	dataJSON, err := json.Marshal(pkarrData)
 	if err != nil {
-		return fmt.Errorf("failed to marshal data: %w", err)
+		return fmt.Errorf("[pkarr] Failed to marshal data: %w", err)
 	}
 
 	// 创建请求
 	url := fmt.Sprintf("%s/pkarr", d.relayURL)
 	req, err := http.NewRequestWithContext(d.ctx, http.MethodPut, url, bytes.NewBuffer(dataJSON))
 	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
+		return fmt.Errorf("[pkarr] Failed to create request: %w", err)
 	}
 
 	// 设置请求头
@@ -110,22 +110,22 @@ func (d *PkarrDiscovery) Publish(data *common.EndpointData) error {
 	// 发送请求
 	resp, err := d.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("failed to send request: %w", err)
+		return fmt.Errorf("[pkarr] Failed to send request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	// 读取响应
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return fmt.Errorf("failed to read response: %w", err)
+		return fmt.Errorf("[pkarr] Failed to read response: %w", err)
 	}
 
 	// 检查响应状态
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("failed to publish: %s, status code: %d", string(respBody), resp.StatusCode)
+		return fmt.Errorf("[pkarr] Failed to publish: %s, status code: %d", string(respBody), resp.StatusCode)
 	}
 
-	log.Printf("Published PKARR record for endpoint %s to %s", data.Id.String(), d.relayURL)
+	log.Printf("[pkarr] Published PKARR record for endpoint %s to %s", data.Id.String(), d.relayURL)
 	return nil
 }
 
@@ -147,14 +147,14 @@ func (d *PkarrDiscovery) Discover(id *crypto.EndpointId) (<-chan *common.Endpoin
 		// 创建请求
 		req, err := http.NewRequestWithContext(d.ctx, http.MethodGet, url, nil)
 		if err != nil {
-			log.Printf("Failed to create request: %v", err)
+			log.Printf("[pkarr] Failed to create request: %v", err)
 			return
 		}
 
 		// 发送请求
 		resp, err := d.httpClient.Do(req)
 		if err != nil {
-			log.Printf("Failed to send request: %v", err)
+			log.Printf("[pkarr] Failed to send request: %v", err)
 			return
 		}
 		defer resp.Body.Close()
@@ -162,20 +162,20 @@ func (d *PkarrDiscovery) Discover(id *crypto.EndpointId) (<-chan *common.Endpoin
 		// 读取响应
 		respBody, err := io.ReadAll(resp.Body)
 		if err != nil {
-			log.Printf("Failed to read response: %v", err)
+			log.Printf("[pkarr] Failed to read response: %v", err)
 			return
 		}
 
 		// 检查响应状态
 		if resp.StatusCode != http.StatusOK {
-			log.Printf("Failed to discover endpoint: %s, status code: %d", string(respBody), resp.StatusCode)
+			log.Printf("[pkarr] Failed to discover endpoint: %s, status code: %d", string(respBody), resp.StatusCode)
 			return
 		}
 
 		// 解析响应
 		var pkarrData map[string]interface{}
 		if err := json.Unmarshal(respBody, &pkarrData); err != nil {
-			log.Printf("Failed to unmarshal response: %v", err)
+			log.Printf("[pkarr] Failed to unmarshal response: %v", err)
 			return
 		}
 

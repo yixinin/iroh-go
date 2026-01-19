@@ -54,7 +54,15 @@ type Connection struct {
 }
 
 func (c *Connection) Conn() quic.Connection {
-	return c.conn
+	if c.conn != nil {
+		return c.conn
+	}
+	conn := relay.NewQUICConnection(c.relay, c.remoteId)
+	return conn
+}
+
+func (c *Connection) Relay() *relay.RelayConnection {
+	return c.relay
 }
 
 func (c *Connection) RemoteId() *crypto.EndpointId {

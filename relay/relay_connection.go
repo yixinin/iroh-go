@@ -28,6 +28,8 @@ type RelayConnection struct {
 	ctx        context.Context
 	cancel     context.CancelFunc
 	wg         sync.WaitGroup
+	lastPong   time.Time
+	lastPongMu sync.RWMutex
 }
 
 func NewRelayConnection(client *Client, remoteId *crypto.EndpointId) *RelayConnection {
@@ -84,73 +86,59 @@ func (rc *RelayConnection) receiveLoop() {
 		case <-rc.closeChan:
 			return
 		default:
-			msg, err := rc.client.ReceiveMessage()
-			if err != nil {
-				if err == io.EOF {
-					log.Printf("[RelayConnection] Connection closed by server")
-				} else {
-					log.Printf("[RelayConnection] Failed to receive message: %v", err)
-				}
-				rc.Close()
-				return
-			}
+		}
 
-			switch m := msg.(type) {
-			case *RelayToClientDatagram:
-				if rc.remoteId == nil {
+		msg, err := rc.client.ReceiveMessage()
+		if err != nil {
+			if err == io.EOF {
+				log.Printf("[RelayConnection] Connection closed by server")
+			} else {
+				log.Printf("[RelayConnection] Failed to receive message: %v", err)
+			}
+			rc.Close()
+			return
+		}
+
+		switch m := msg.(type) {
+		case *RelayToClientDatagram:
+			if rc.remoteId == nil {
+				rc.recvQueue <- m
+			} else {
+				if pk, err := crypto.PublicKeyFromBytes(m.SrcPublicKey[:]); err == nil && pk.String() == rc.remoteId.String() {
 					rc.recvQueue <- m
+				}
+			}
+		case *RelayToClientDatagramBatch:
+			datagrams := UnbatchDatagrams(m.Datagrams, m.SegmentSize)
+			for _, data := range datagrams {
+				dgram := &RelayToClientDatagram{
+					SrcPublicKey: m.SrcPublicKey,
+					ECN:          m.ECN,
+					Data:         data,
+				}
+				if rc.remoteId == nil {
+					rc.recvQueue <- dgram
 				} else {
 					if pk, err := crypto.PublicKeyFromBytes(m.SrcPublicKey[:]); err == nil && pk.String() == rc.remoteId.String() {
-						rc.recvQueue <- m
-					}
-				}
-			case *RelayToClientDatagramBatch:
-				datagrams := UnbatchDatagrams(m.Datagrams, m.SegmentSize)
-				for _, data := range datagrams {
-					dgram := &RelayToClientDatagram{
-						SrcPublicKey: m.SrcPublicKey,
-						ECN:          m.ECN,
-						Data:         data,
-					}
-					if rc.remoteId == nil {
 						rc.recvQueue <- dgram
-					} else {
-						if pk, err := crypto.PublicKeyFromBytes(m.SrcPublicKey[:]); err == nil && pk.String() == rc.remoteId.String() {
-							rc.recvQueue <- dgram
-						}
 					}
 				}
-			case *Ping:
-				log.Printf("[RelayConnection] Received Ping, sending Pong")
-				pong := &Pong{Payload: m.Payload}
-				pongData, err := EncodePong(pong)
-				if err != nil {
-					log.Printf("[RelayConnection] Failed to encode pong: %v", err)
-					continue
-				}
-				if err := rc.client.Send(pongData); err != nil {
-					log.Printf("[RelayConnection] Failed to send pong: %v", err)
-					rc.Close()
-					return
-				}
-			case *Pong:
-				log.Printf("[RelayConnection] Received Pong")
-			case *EndpointGone:
-				log.Printf("[RelayConnection] Endpoint gone: %x", m.PublicKey)
-				rc.Close()
-				return
-			case *Health:
-				if m.Message != "" {
-					log.Printf("[RelayConnection] Health issue: %s", m.Message)
-				} else {
-					log.Printf("[RelayConnection] Health restored")
-				}
-			case *Restarting:
-				log.Printf("[RelayConnection] Relay restarting: reconnect in %dms, try for %dms", m.ReconnectDelayMs, m.TotalTryTimeMs)
-				time.Sleep(time.Duration(m.ReconnectDelayMs) * time.Millisecond)
-				rc.Close()
-				return
 			}
+		case *EndpointGone:
+			log.Printf("[RelayConnection] Endpoint gone: %x", m.PublicKey)
+			rc.Close()
+			return
+		case *Health:
+			if m.Message != "" {
+				log.Printf("[RelayConnection] Health issue: %s", m.Message)
+			} else {
+				log.Printf("[RelayConnection] Health restored")
+			}
+		case *Restarting:
+			log.Printf("[RelayConnection] Relay restarting: reconnect in %dms, try for %dms", m.ReconnectDelayMs, m.TotalTryTimeMs)
+			time.Sleep(time.Duration(m.ReconnectDelayMs) * time.Millisecond)
+			rc.Close()
+			return
 		}
 	}
 }
@@ -264,4 +252,23 @@ func (rc *RelayConnection) IsClosed() bool {
 	rc.closeMutex.RLock()
 	defer rc.closeMutex.RUnlock()
 	return rc.closed
+}
+
+func (rc *RelayConnection) LastPongTime() time.Time {
+	rc.lastPongMu.RLock()
+	defer rc.lastPongMu.RUnlock()
+	return rc.lastPong
+}
+
+func (rc *RelayConnection) IsHealthy(timeout time.Duration) bool {
+	if rc.IsClosed() {
+		return false
+	}
+
+	lastPong := rc.LastPongTime()
+	if lastPong.IsZero() {
+		return true
+	}
+
+	return time.Since(lastPong) < timeout
 }

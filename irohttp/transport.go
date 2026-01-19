@@ -157,7 +157,7 @@ func WithIdleConnTimeout(timeout time.Duration) Option {
 
 func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if req.URL == nil {
-		return nil, fmt.Errorf("request URL cannot be nil")
+		return nil, fmt.Errorf("[irohttp] Request URL cannot be nil")
 	}
 
 	ctx := req.Context()
@@ -169,27 +169,27 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 	remoteId, path, err := parseIrohURL(req.URL)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse iroh URL: %w", err)
+		return nil, fmt.Errorf("[irohttp] Failed to parse iroh URL: %w", err)
 	}
 
 	conn, err := t.getOrCreateConnection(ctx, remoteId)
 	if err != nil {
-		return nil, fmt.Errorf("failed to establish connection: %w", err)
+		return nil, fmt.Errorf("[irohttp] Failed to establish connection: %w", err)
 	}
 
 	stream, err := conn.OpenStreamSync(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to open stream: %w", err)
+		return nil, fmt.Errorf("[irohttp] Failed to open stream: %w", err)
 	}
 	defer stream.Close()
 
 	if err := writeHTTPRequest(req, path, stream); err != nil {
-		return nil, fmt.Errorf("failed to write request: %w", err)
+		return nil, fmt.Errorf("[irohttp] Failed to write request: %w", err)
 	}
 
 	resp, err := readHTTPResponse(req, stream)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
+		return nil, fmt.Errorf("[irohttp] Failed to read response: %w", err)
 	}
 
 	return resp, nil
@@ -197,17 +197,17 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 func parseIrohURL(u *url.URL) (*crypto.EndpointId, string, error) {
 	if u.Scheme != "iroh" {
-		return nil, "", fmt.Errorf("unsupported scheme: %s (expected 'iroh')", u.Scheme)
+		return nil, "", fmt.Errorf("[irohttp] Unsupported scheme: %s (expected 'iroh')", u.Scheme)
 	}
 
 	host := u.Host
 	if host == "" {
-		return nil, "", fmt.Errorf("host cannot be empty")
+		return nil, "", fmt.Errorf("[irohttp] Host cannot be empty")
 	}
 
 	id, err := crypto.ParseEndpointId(host)
 	if err != nil {
-		return nil, "", fmt.Errorf("invalid endpoint ID: %w", err)
+		return nil, "", fmt.Errorf("[irohttp] Invalid endpoint ID: %w", err)
 	}
 
 	path := u.Path
@@ -235,7 +235,10 @@ func (t *Transport) getOrCreateConnection(ctx context.Context, remoteId *crypto.
 		return nil, err
 	}
 
-	quicConn := conn.Conn().(quic.Connection)
+	quicConn := conn.Conn()
+	if quicConn == nil {
+		return nil, fmt.Errorf("relay connections are not yet supported for HTTP over iroh")
+	}
 	t.connCache.set(cacheKey, quicConn)
 
 	return quicConn, nil

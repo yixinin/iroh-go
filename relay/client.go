@@ -139,6 +139,16 @@ func (c *Client) Connect() error {
 
 	log.Printf("[RelayClient] WebSocket connection established successfully")
 
+	conn.SetPingHandler(func(appData string) error {
+		log.Printf("[RelayClient] Received WebSocket ping, sending pong")
+		return conn.WriteControl(websocket.PongMessage, []byte(appData), time.Now().Add(5*time.Second))
+	})
+
+	conn.SetPongHandler(func(appData string) error {
+		log.Printf("[RelayClient] Received WebSocket pong")
+		return nil
+	})
+
 	if localAddr := conn.LocalAddr(); localAddr != nil {
 		c.localAddr = localAddr.String()
 	}
@@ -326,10 +336,13 @@ func (c *Client) ReceiveMessage() (interface{}, error) {
 		if err := c.Send(pongData); err != nil {
 			return nil, fmt.Errorf("failed to send pong: %w", err)
 		}
-		return m, nil
+
+		// Ignore Ping messages, continue receiving
+		return c.ReceiveMessage()
 	case *Pong:
 		log.Printf("[RelayClient] Received Pong")
-		return m, nil
+		// Ignore Pong messages, continue receiving
+		return c.ReceiveMessage()
 	default:
 		return msg, nil
 	}

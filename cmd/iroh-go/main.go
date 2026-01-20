@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 
+	"github.com/yixinin/iroh-go/crypto"
 	"github.com/yixinin/iroh-go/endpoint"
 
 	"github.com/gin-gonic/gin"
@@ -12,7 +13,10 @@ import (
 
 func main() {
 	// 创建端点（使用默认值）
-	endp, err := endpoint.NewEndpoint(endpoint.Options{})
+	endp, err := endpoint.NewEndpoint(endpoint.Options{
+		ALPNs:     [][]byte{[]byte("iroh3")},
+		SecretKey: crypto.NewSecretKey(),
+	})
 	if err != nil {
 		log.Fatal(err)
 	}

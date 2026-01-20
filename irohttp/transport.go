@@ -19,7 +19,7 @@ import (
 )
 
 const (
-	defaultALPN         = "h3"
+	defaultALPN         = "iroh3"
 	defaultTimeout      = 30 * time.Second
 	defaultDialTimeout  = 10 * time.Second
 	maxIdleConns        = 100
@@ -271,12 +271,11 @@ func writeHTTPRequest(req *http.Request, path string, stream quic.Stream) error 
 		fmt.Fprintf(&buf, "\r\n")
 	}
 
-	n, err := stream.Write(buf.Bytes())
+	_, err := stream.Write(buf.Bytes())
 	if err != nil {
 		return err
 	}
 
-	fmt.Printf("[irohttp] Wrote %d bytes to stream\n", n)
 	return nil
 }
 

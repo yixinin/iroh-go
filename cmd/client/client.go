@@ -16,7 +16,7 @@ import (
 
 func main() {
 	// 解析命令行参数
-	urlFlag := flag.String("url", "iroh://8612dcd73af3c61820292d5b5d54b130e72b1f04528a01d1b5a7438b0c7268bc/health", "目标 URL")
+	urlFlag := flag.String("url", "iroh://fb0ca89bb3fb6efefb5573ae64154c602c0d741f17a163bc84e465a39aa1c8c0/health", "目标 URL")
 	methodFlag := flag.String("method", "GET", "HTTP 方法")
 	dataFlag := flag.String("data", "", "请求体数据")
 	timeoutFlag := flag.Duration("timeout", 30*time.Second, "请求超时时间")
@@ -27,6 +27,7 @@ func main() {
 	secretKey := crypto.NewSecretKey()
 	// 创建 endpoint（使用默认值）
 	ep, err := endpoint.NewEndpoint(endpoint.Options{
+		ALPNs:     [][]byte{[]byte("iroh3")},
 		SecretKey: secretKey,
 	})
 	if err != nil {

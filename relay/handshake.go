@@ -3,6 +3,7 @@ package relay
 import (
 	"encoding/base64"
 	"fmt"
+	"log"
 
 	"github.com/yixinin/iroh-go/crypto"
 
@@ -43,7 +44,10 @@ func (sc *ServerChallenge) MessageToSign() [32]byte {
 
 func NewClientAuth(secretKey *crypto.SecretKey, challenge *ServerChallenge) *ClientAuth {
 	message := challenge.MessageToSign()
+	log.Printf("[NewClientAuth] Challenge: %x", challenge.Challenge)
+	log.Printf("[NewClientAuth] Message to sign: %x", message)
 	signature := secretKey.Sign(message[:])
+	log.Printf("[NewClientAuth] Signature: %x", signature)
 
 	var pk [32]byte
 	copy(pk[:], secretKey.Public().Bytes())

@@ -47,22 +47,21 @@ type EndpointAddr struct {
 }
 
 type Connection struct {
-	conn     quic.Connection
-	remoteId *crypto.EndpointId
-	alpn     []byte
-	relay    *relay.RelayConnection
+	quicConn  quic.Connection
+	relayConn *relay.RelayConnection
+	remoteId  *crypto.EndpointId
+	alpn      []byte
 }
 
 func (c *Connection) Conn() quic.Connection {
-	if c.conn != nil {
-		return c.conn
+	if c.quicConn != nil {
+		return c.quicConn
 	}
-	conn := relay.NewQUICConnection(c.relay, c.remoteId)
-	return conn
+	return c.relayConn
 }
 
 func (c *Connection) Relay() *relay.RelayConnection {
-	return c.relay
+	return c.relayConn
 }
 
 func (c *Connection) RemoteId() *crypto.EndpointId {
@@ -100,6 +99,8 @@ type MagicSock struct {
 	id           *crypto.EndpointId
 	secretKey    *crypto.SecretKey
 	discovery    discovery.Discovery
+
+	customPacketConn *CustomPacketConn
 
 	remoteStates   map[string]*RemoteStateActor
 	remoteStatesMu sync.RWMutex
@@ -204,6 +205,8 @@ func NewMagicSock(opts Options) (*MagicSock, error) {
 
 	relayMappedAddrs := NewAddrMap()
 
+	customPacketConn := NewCustomPacketConn(id)
+
 	ms := &MagicSock{
 		endpoint:         listener,
 		remoteMap:        remoteMap,
@@ -213,12 +216,27 @@ func NewMagicSock(opts Options) (*MagicSock, error) {
 		id:               id,
 		secretKey:        opts.SecretKey,
 		discovery:        opts.Discovery,
+		customPacketConn: customPacketConn,
 		remoteStates:     make(map[string]*RemoteStateActor),
 		localDirectAddrs: localDirectAddrs,
 		relayMappedAddrs: relayMappedAddrs,
 		ctx:              ctx,
 		cancel:           cancel,
 	}
+
+	for _, transport := range transports.IPTransports() {
+		if ipTransport, ok := transport.(*TransportIp); ok {
+			if ipTransport.conn != nil {
+				customPacketConn.SetIPv4Conn(ipTransport.conn)
+			}
+		}
+	}
+
+	if len(relayClients) > 0 {
+		customPacketConn.SetRelayConn(relayClients[0])
+	}
+
+	customPacketConn.Start()
 
 	ms.startBackgroundTasks()
 
@@ -248,6 +266,12 @@ func (ms *MagicSock) startBackgroundTasks() {
 	go func() {
 		defer ms.wg.Done()
 		ms.networkMonitorLoop()
+	}()
+
+	ms.wg.Add(1)
+	go func() {
+		defer ms.wg.Done()
+		ms.udpReceiveLoop()
 	}()
 }
 
@@ -331,6 +355,61 @@ func (ms *MagicSock) networkMonitorLoop() {
 			ms.monitorNetworkChanges()
 		}
 	}
+}
+
+func (ms *MagicSock) udpReceiveLoop() {
+	buf := make([]byte, 65536)
+
+	for {
+		select {
+		case <-ms.ctx.Done():
+			return
+		default:
+			for _, transport := range ms.transports.IPTransports() {
+				if ipTransport, ok := transport.(*TransportIp); ok {
+					n, addr, err := ipTransport.ReceiveFrom(buf)
+					if err != nil {
+						continue
+					}
+
+					ms.handleUDPPacket(buf[:n], addr)
+				}
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+func (ms *MagicSock) handleUDPPacket(data []byte, addr *net.UDPAddr) {
+	if IsHolepunchPacket(data) {
+		ms.handleHolepunchPacket(data, addr)
+	}
+}
+
+func (ms *MagicSock) handleHolepunchPacket(data []byte, addr *net.UDPAddr) {
+	packet, err := ParseHolepunchPacket(data)
+	if err != nil || packet == nil {
+		return
+	}
+
+	senderId, err := crypto.ParseEndpointId(string(packet.SenderId[:]))
+	if err != nil {
+		return
+	}
+
+	log.Printf("[MagicSock] Received holepunch packet from %s (ID: %s)", addr, senderId.String())
+
+	ms.remoteStatesMu.Lock()
+	actor, exists := ms.remoteStates[senderId.String()]
+	if !exists {
+		actor = ms.createRemoteStateActor(senderId)
+		ms.remoteStates[senderId.String()] = actor
+		actor.Start()
+	}
+	ms.remoteStatesMu.Unlock()
+
+	packetAddr := NewAddrFromIP(addr)
+	actor.AddPath(uint64(time.Now().UnixNano()), PathIdZero, *packetAddr)
 }
 
 func (ms *MagicSock) monitorNetworkChanges() {
@@ -568,10 +647,10 @@ func (ms *MagicSock) tryRelayConnection(ctx context.Context, addr EndpointAddr, 
 		actor.SetRelayConnection(relayConn)
 
 		return &Connection{
-			conn:     nil,
-			remoteId: addr.Id,
-			alpn:     alpn,
-			relay:    relayConn,
+			quicConn:  nil,
+			remoteId:  addr.Id,
+			alpn:      alpn,
+			relayConn: relayConn,
 		}, nil
 	}
 
@@ -612,7 +691,7 @@ func (ms *MagicSock) dialQUIC(ctx context.Context, addr string, remoteId *crypto
 	}
 
 	return &Connection{
-		conn:     conn,
+		quicConn: conn,
 		remoteId: remoteId,
 		alpn:     alpn,
 	}, nil
@@ -633,6 +712,25 @@ func (ms *MagicSock) Accept() (<-chan *Incoming, error) {
 				remoteId: ms.extractEndpointId(conn),
 			}
 			ch <- incoming
+		}
+		close(ch)
+	}()
+
+	go func() {
+		for {
+			for _, rc := range ms.relayClients {
+				relayConn := relay.NewRelayConnection(rc, ms.id)
+				stream, err := relayConn.AcceptStream(context.Background())
+				if err != nil {
+					break
+				}
+				incoming := &Incoming{
+					conn:     stream,
+					remoteId: ms.extractEndpointId(stream),
+				}
+				ch <- incoming
+			}
+
 		}
 		close(ch)
 	}()
@@ -690,6 +788,52 @@ func (ms *MagicSock) Close() error {
 
 	log.Printf("[MagicSock] MagicSock closed")
 	return ms.endpoint.Close()
+}
+
+func (ms *MagicSock) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
+	for _, transport := range ms.transports.IPTransports() {
+		if ipTransport, ok := transport.(*TransportIp); ok {
+			n, udpAddr, err := ipTransport.ReceiveFrom(p)
+			if err == nil && n > 0 {
+				return n, udpAddr, nil
+			}
+		}
+	}
+	return 0, nil, nil
+}
+
+func (ms *MagicSock) WriteTo(p []byte, addr net.Addr) (n int, err error) {
+	udpAddr, ok := addr.(*net.UDPAddr)
+	if !ok {
+		return 0, fmt.Errorf("invalid address type")
+	}
+
+	packetAddr := NewAddrFromIP(udpAddr)
+	for _, transport := range ms.transports.IPTransports() {
+		if ipTransport, ok := transport.(*TransportIp); ok {
+			err := ipTransport.Send(packetAddr, p)
+			if err == nil {
+				return len(p), nil
+			}
+		}
+	}
+	return 0, fmt.Errorf("failed to send packet")
+}
+
+func (ms *MagicSock) LocalAddr() net.Addr {
+	return ms.endpoint.Addr()
+}
+
+func (ms *MagicSock) SetDeadline(t time.Time) error {
+	return nil
+}
+
+func (ms *MagicSock) SetReadDeadline(t time.Time) error {
+	return nil
+}
+
+func (ms *MagicSock) SetWriteDeadline(t time.Time) error {
+	return nil
 }
 
 type ConnectionStatus struct {

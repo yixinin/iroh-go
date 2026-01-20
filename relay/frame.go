@@ -123,23 +123,25 @@ func NewRecvError(reason string, cause error) *RecvError {
 	}
 }
 
+type FrameType uint32
+
 const (
-	FrameTypeServerChallenge            = 0
-	FrameTypeClientAuth                 = 1
-	FrameTypeServerConfirmsAuth         = 2
-	FrameTypeServerDeniesAuth           = 3
-	FrameTypeClientToRelayDatagram      = 4
-	FrameTypeClientToRelayDatagramBatch = 5
-	FrameTypeRelayToClientDatagram      = 6
-	FrameTypeRelayToClientDatagramBatch = 7
-	FrameTypeEndpointGone               = 8
-	FrameTypePing                       = 9
-	FrameTypePong                       = 10
-	FrameTypeHealth                     = 11
-	FrameTypeRestarting                 = 12
+	FrameTypeServerChallenge            FrameType = 0
+	FrameTypeClientAuth                 FrameType = 1
+	FrameTypeServerConfirmsAuth         FrameType = 2
+	FrameTypeServerDeniesAuth           FrameType = 3
+	FrameTypeClientToRelayDatagram      FrameType = 4
+	FrameTypeClientToRelayDatagramBatch FrameType = 5
+	FrameTypeRelayToClientDatagram      FrameType = 6
+	FrameTypeRelayToClientDatagramBatch FrameType = 7
+	FrameTypeEndpointGone               FrameType = 8
+	FrameTypePing                       FrameType = 9
+	FrameTypePong                       FrameType = 10
+	FrameTypeHealth                     FrameType = 11
+	FrameTypeRestarting                 FrameType = 12
 )
 
-func FrameTypeToString(frameType uint32) string {
+func FrameTypeToString(frameType FrameType) string {
 	switch frameType {
 	case FrameTypeServerChallenge:
 		return "ServerChallenge"
@@ -172,6 +174,6 @@ func FrameTypeToString(frameType uint32) string {
 	}
 }
 
-func IsValidFrameType(frameType uint32) bool {
+func IsValidFrameType(frameType FrameType) bool {
 	return frameType <= FrameTypeRestarting
 }

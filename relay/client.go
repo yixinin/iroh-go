@@ -1,14 +1,17 @@
 package relay
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net/http"
 	"net/url"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/yixinin/iroh-go/crypto"
+	"github.com/yixinin/postcard-go/postcard"
 
 	"github.com/gorilla/websocket"
 )
@@ -61,11 +64,21 @@ const (
 )
 
 type Client struct {
-	conn      *websocket.Conn
-	config    *Config
-	url       string
-	localAddr string
-	keyCache  *KeyCache
+	conn       *websocket.Conn
+	config     *Config
+	url        string
+	localAddr  string
+	keyCache   *KeyCache
+	latestPing atomic.Uint64
+
+	readBuffer  chan *RelayToClientDatagram
+	writeBuffer chan []byte
+
+	readDeadline  time.Time
+	writeDeadline time.Time
+
+	ctx    context.Context
+	cancel context.CancelFunc
 }
 
 type Config struct {
@@ -92,9 +105,11 @@ func NewClient(config *Config) (*Client, error) {
 	}
 
 	return &Client{
-		config:   config,
-		url:      config.Urls[0],
-		keyCache: NewKeyCache(128),
+		config:      config,
+		url:         config.Urls[0],
+		keyCache:    NewKeyCache(128),
+		readBuffer:  make(chan *RelayToClientDatagram, 1024),
+		writeBuffer: make(chan []byte, 1024),
 	}, nil
 }
 
@@ -123,6 +138,18 @@ func (c *Client) Connect() error {
 
 	headers := http.Header{}
 	headers.Set("User-Agent", "iroh-go/1.0")
+
+	// Try to use TLS key material authentication if available
+	// For now, disable this as it causes connection issues
+	// if c.config.SecretKey != nil {
+	// 	kmca, err := c.tryKeyMaterialAuth()
+	// 	if err == nil {
+	// 		headers.Set("x-iroh-relay-client-auth-v1", kmca.ToHeaderValue())
+	// 		log.Printf("[RelayClient] Using TLS key material authentication")
+	// 	} else {
+	// 		log.Printf("[RelayClient] Failed to create TLS key material auth: %v", err)
+	// 	}
+	// }
 
 	conn, resp, err := dialer.Dial(dialURL, headers)
 	if err != nil {
@@ -153,6 +180,8 @@ func (c *Client) Connect() error {
 	}
 	c.conn = conn
 
+	c.ctx, c.cancel = context.WithCancel(context.Background())
+
 	log.Printf("[RelayClient] Starting handshake")
 	if err := c.handshake(); err != nil {
 		conn.Close()
@@ -162,6 +191,13 @@ func (c *Client) Connect() error {
 	log.Printf("[RelayClient] Handshake completed successfully")
 
 	return nil
+}
+
+func (c *Client) tryKeyMaterialAuth() (*KeyMaterialClientAuth, error) {
+	// This is a simplified implementation
+	// In a real implementation, we would need to extract TLS key material
+	// For now, we'll return an error to force challenge-response auth
+	return nil, fmt.Errorf("TLS key material extraction not implemented")
 }
 
 func (c *Client) handlePing(appData string) error {
@@ -230,11 +266,18 @@ func (c *Client) waitForAuthResult() error {
 	log.Printf("[RelayClient] Received %d bytes from server", len(confirmData))
 	log.Printf("[RelayClient] Raw data: %x", confirmData)
 
+	// Debug: log first byte to see message type
+	if len(confirmData) > 0 {
+		log.Printf("[RelayClient] First byte (message type): %02x", confirmData[0])
+	}
+
 	resultMsg, err := ParseRelayMessage(confirmData)
 	if err != nil {
 		log.Printf("[RelayClient] Failed to parse auth result message: %v", err)
 		return fmt.Errorf("failed to parse auth result message: %w", err)
 	}
+
+	log.Printf("[RelayClient] Parsed message type: %T", resultMsg)
 
 	switch result := resultMsg.(type) {
 	case *ServerConfirmsAuth:
@@ -246,6 +289,81 @@ func (c *Client) waitForAuthResult() error {
 	default:
 		log.Printf("[RelayClient] Unexpected message type: %T", resultMsg)
 		return fmt.Errorf("expected ServerConfirmsAuth or ServerDeniesAuth, got %T", resultMsg)
+	}
+}
+func (c *Client) loopRead() {
+	for {
+		select {
+		case <-c.ctx.Done():
+			log.Printf("[RelayClient] Context canceled, closing connection")
+			return
+		default:
+			msg, err := c.ReceiveMessage()
+			if err != nil {
+				log.Printf("[RelayClient] Error reading message: %v", err)
+				return
+			}
+
+			switch m := msg.(type) {
+			case *RelayToClientDatagram:
+				c.readBuffer <- m
+			case *RelayToClientDatagramBatch:
+				c.readBuffer <- &RelayToClientDatagram{
+					SrcPublicKey: m.SrcPublicKey,
+					Datagrams:    m.Datagrams,
+				}
+			default:
+				log.Printf("[RelayClient] Unexpected message type: %T", m)
+			}
+		}
+	}
+}
+
+func (c *Client) loopWrite() {
+	for {
+		select {
+		case <-c.ctx.Done():
+			log.Printf("[RelayClient] Context canceled, closing connection")
+			return
+		case data := <-c.writeBuffer:
+			var tag postcard.Varint
+			err := postcard.Deserialize(data, &tag)
+			if err != nil {
+				log.Printf("[RelayClient] Error deserializing message type: %v", err)
+				continue
+			}
+
+			switch FrameType(tag) {
+			case FrameTypeClientToRelayDatagram:
+				msgData, err := EncodeClientToRelayDatagram(&ClientToRelayDatagram{
+					DestPublicKey: [32]byte(c.config.SecretKey.Public().Bytes()),
+					Datagrams:     NewDatagrams(data),
+				})
+				if err != nil {
+					log.Printf("[RelayClient] Error encoding message: %v", err)
+					return
+				}
+				if err := c.Send(msgData); err != nil {
+					log.Printf("[RelayClient] Error sending message: %v", err)
+					return
+				}
+			case FrameTypeClientToRelayDatagramBatch:
+				msgData, err := EncodeClientToRelayDatagramBatch(&ClientToRelayDatagramBatch{
+					DestPublicKey: [32]byte(c.config.SecretKey.Public().Bytes()),
+					Datagrams:     NewDatagrams(data),
+				})
+				if err != nil {
+					log.Printf("[RelayClient] Error encoding message: %v", err)
+					return
+				}
+				if err := c.Send(msgData); err != nil {
+					log.Printf("[RelayClient] Error sending message: %v", err)
+					return
+				}
+			default:
+				log.Printf("[RelayClient] Unknown message type: %d", tag)
+			}
+		}
 	}
 }
 
@@ -267,11 +385,31 @@ func (c *Client) Receive() ([]byte, error) {
 	if c.conn == nil {
 		return nil, fmt.Errorf("not connected to relay")
 	}
-	_, msg, err := c.conn.ReadMessage()
-	return msg, err
+	msgType, msg, err := c.conn.ReadMessage()
+	log.Printf("[RelayClient.Receive] ReadMessage returned: msgType=%d, len(msg)=%d, err=%v", msgType, len(msg), err)
+	if err != nil {
+		log.Printf("[RelayClient.Receive] ReadMessage error details: %v", err)
+		return nil, err
+	}
+	switch msgType {
+	case websocket.BinaryMessage, websocket.TextMessage:
+		return msg, err
+	case websocket.CloseMessage:
+		log.Printf("[RelayClient.Receive] Received close message")
+		return nil, fmt.Errorf("server closed connection")
+	case websocket.PingMessage:
+		log.Printf("[RelayClient.Receive] Received ping message")
+		return nil, fmt.Errorf("server sent ping message, not supported")
+	case websocket.PongMessage:
+		log.Printf("[RelayClient.Receive] Received pong message")
+		return nil, fmt.Errorf("server sent pong message, not supported")
+	default:
+		log.Printf("[RelayClient.Receive] Unexpected message type: %d", msgType)
+		return nil, fmt.Errorf("unexpected message type: %d", msgType)
+	}
 }
 
-func (c *Client) SendDatagram(dest *crypto.PublicKey, ecn uint8, data []byte) error {
+func (c *Client) SendDatagram(dest *crypto.PublicKey, ecn ECN, data []byte) error {
 	if c.conn == nil {
 		return fmt.Errorf("not connected to relay server")
 	}
@@ -281,8 +419,7 @@ func (c *Client) SendDatagram(dest *crypto.PublicKey, ecn uint8, data []byte) er
 
 	dgram := &ClientToRelayDatagram{
 		DestPublicKey: destPk,
-		ECN:           ecn,
-		Data:          data,
+		Datagrams:     NewDatagrams(data),
 	}
 
 	msg, err := EncodeClientToRelayDatagram(dgram)
@@ -293,21 +430,22 @@ func (c *Client) SendDatagram(dest *crypto.PublicKey, ecn uint8, data []byte) er
 	return c.Send(msg)
 }
 
-func (c *Client) SendDatagramBatch(dest *crypto.PublicKey, ecn uint8, segmentSize uint16, datagrams [][]byte) error {
+func (c *Client) SendDatagramBatch(dest *crypto.PublicKey, ecn ECN, segmentSize uint16, datagrams [][]byte) error {
 	if c.conn == nil {
 		return fmt.Errorf("not connected to relay server")
 	}
 
-	batched := BatchDatagrams(datagrams, segmentSize)
+	batched := make([]byte, 0, len(datagrams)*int(segmentSize))
+	for _, d := range datagrams {
+		batched = append(batched, d...)
+	}
 
 	var destPk [32]byte
 	copy(destPk[:], dest.Bytes())
 
 	dgramBatch := &ClientToRelayDatagramBatch{
 		DestPublicKey: destPk,
-		ECN:           ecn,
-		SegmentSize:   segmentSize,
-		Datagrams:     batched,
+		Datagrams:     NewDatagramsBatch(ecn, segmentSize, batched),
 	}
 	log.Printf("[Relay WebSocket] Sending DatagramBatch: %+v", *dgramBatch)
 	msg, err := EncodeClientToRelayDatagramBatch(dgramBatch)
@@ -395,4 +533,59 @@ func (c *Client) LocalAddr() string {
 
 func (c *Client) URL() string {
 	return c.url
+}
+
+func (c *Client) Read(data []byte) (int, error) {
+	var ctx = c.ctx
+	timeout := time.Duration(0)
+	if !c.readDeadline.IsZero() {
+		timeout = time.Until(c.readDeadline)
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(c.ctx, timeout)
+
+		defer func() {
+			cancel()
+			c.readDeadline = time.Time{}
+		}()
+	}
+
+	if timeout > 0 {
+
+	}
+	select {
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	case msg := <-c.readBuffer:
+		return copy(data, msg.Datagrams.Contents), nil
+	}
+}
+
+func (c *Client) Write(data []byte) (int, error) {
+	var ctx = c.ctx
+	timeout := time.Duration(0)
+	if !c.writeDeadline.IsZero() {
+		timeout = time.Until(c.writeDeadline)
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(c.ctx, timeout)
+		defer func() {
+			cancel()
+			c.writeDeadline = time.Time{}
+		}()
+	}
+	select {
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	case c.writeBuffer <- data:
+		return len(data), nil
+	}
+}
+
+func (c *Client) SetWriteDeadline(t time.Time) error {
+	c.writeDeadline = t
+	return nil
+}
+
+func (c *Client) SetReadDeadline(t time.Time) error {
+	c.readDeadline = t
+	return nil
 }

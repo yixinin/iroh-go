@@ -154,11 +154,6 @@ func (c *Connection) Conn() quic.Connection {
 	return c.conn
 }
 
-// Relay 获取底层Relay连接
-func (c *Connection) Relay() *relay.RelayConnection {
-	return c.relay
-}
-
 // RemoteId 获取远程端点ID
 func (i *Incoming) RemoteId() *crypto.EndpointId {
 	return i.remoteId

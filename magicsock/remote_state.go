@@ -230,6 +230,43 @@ func (rsa *RemoteStateActor) holepunchPath(path *Addr) {
 		rsa.lastHolepunch.attempts++
 		rsa.lastHolepunch.addrs = append(rsa.lastHolepunch.addrs, *path)
 	}
+
+	if !path.IsIP() {
+		return
+	}
+
+	udpAddr := path.ToSocketAddr()
+	if udpAddr == nil {
+		return
+	}
+
+	rsa.sendHolepunchPackets(udpAddr)
+}
+
+func (rsa *RemoteStateActor) sendHolepunchPackets(addr *net.UDPAddr) {
+	holepunchData := rsa.createHolepunchPacket()
+
+	for i := 0; i < 3; i++ {
+		rsa.sendHolepunchPacket(addr, holepunchData)
+		time.Sleep(time.Duration(50) * time.Millisecond)
+	}
+}
+
+func (rsa *RemoteStateActor) createHolepunchPacket() []byte {
+	packet := make([]byte, 32)
+	copy(packet, rsa.localEndpointId.Bytes())
+	return packet
+}
+
+func (rsa *RemoteStateActor) sendHolepunchPacket(addr *net.UDPAddr, data []byte) error {
+	udpConn, err := net.DialUDP("udp", nil, addr)
+	if err != nil {
+		return err
+	}
+	defer udpConn.Close()
+
+	_, err = udpConn.Write(data)
+	return err
 }
 
 func (rsa *RemoteStateActor) openPendingPaths() {

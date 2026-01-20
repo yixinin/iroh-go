@@ -3,10 +3,11 @@ package endpoint
 import (
 	"context"
 	"fmt"
-	"github.com/yixinin/iroh-go/crypto"
 	"net"
 	"sync"
 	"time"
+
+	"github.com/yixinin/iroh-go/crypto"
 
 	"github.com/quic-go/quic-go"
 )

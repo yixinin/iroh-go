@@ -3,6 +3,7 @@ package magicsock
 import (
 	"fmt"
 	"net"
+	"sync"
 
 	"github.com/yixinin/iroh-go/common"
 	"github.com/yixinin/iroh-go/crypto"
@@ -283,6 +284,9 @@ func DefaultIPv6Config() *TransportConfig {
 type TransportIp struct {
 	addr      string
 	localAddr string
+	conn      *net.UDPConn
+	mu        sync.RWMutex
+	closed    bool
 }
 
 // Type 获取传输类型
@@ -297,6 +301,17 @@ func (t *TransportIp) Addr() string {
 
 // Close 关闭传输
 func (t *TransportIp) Close() error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if t.closed {
+		return nil
+	}
+
+	t.closed = true
+	if t.conn != nil {
+		return t.conn.Close()
+	}
 	return nil
 }
 
@@ -337,8 +352,52 @@ func (t *TransportIp) OnNetworkChange() error {
 
 // Rebind 重新绑定传输
 func (t *TransportIp) Rebind() error {
-	// 重新绑定套接字
-	return nil
+	return t.OnNetworkChange()
+}
+
+// ReceiveFrom 从 UDP socket 接收数据
+func (t *TransportIp) ReceiveFrom(buf []byte) (int, *net.UDPAddr, error) {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	if t.closed {
+		return 0, nil, fmt.Errorf("transport is closed")
+	}
+
+	if t.conn == nil {
+		return 0, nil, fmt.Errorf("UDP connection not initialized")
+	}
+
+	n, addr, err := t.conn.ReadFromUDP(buf)
+	if err != nil {
+		return 0, nil, err
+	}
+
+	return n, addr, nil
+}
+
+// SetReadBuffer 设置读取缓冲区大小
+func (t *TransportIp) SetReadBuffer(size int) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if t.conn == nil {
+		return nil
+	}
+
+	return t.conn.SetReadBuffer(size)
+}
+
+// SetWriteBuffer 设置写入缓冲区大小
+func (t *TransportIp) SetWriteBuffer(size int) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if t.conn == nil {
+		return nil
+	}
+
+	return t.conn.SetWriteBuffer(size)
 }
 
 // TransportRelay 中继传输实现

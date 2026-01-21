@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/yixinin/iroh-go/crypto"
-	"github.com/yixinin/postcard-go/postcard"
 
 	"github.com/gorilla/websocket"
 )
@@ -63,15 +62,22 @@ const (
 	MaxFrameSize         = 16384
 )
 
+type Packet struct {
+	RemoteID *crypto.EndpointId
+	Data     []byte
+}
+
 type Client struct {
 	conn       *websocket.Conn
 	config     *Config
 	url        string
-	localAddr  string
+	localAddr  *crypto.EndpointId
 	keyCache   *KeyCache
-	latestPing atomic.Uint64
+	latestPing atomic.Int64
 
-	readBuffer  chan *RelayToClientDatagram
+	packets chan *Packet
+	mu      sync.Mutex
+
 	writeBuffer chan []byte
 
 	readDeadline  time.Time
@@ -99,17 +105,17 @@ func (c *Config) WithProxyURL(proxyURL string) *Config {
 	return c
 }
 
-func NewClient(config *Config) (*Client, error) {
+func NewClient(config *Config, localAddr *crypto.EndpointId) (*Client, error) {
 	if len(config.Urls) == 0 {
 		return nil, fmt.Errorf("no relay URLs provided")
 	}
 
 	return &Client{
-		config:      config,
-		url:         config.Urls[0],
-		keyCache:    NewKeyCache(128),
-		readBuffer:  make(chan *RelayToClientDatagram, 1024),
-		writeBuffer: make(chan []byte, 1024),
+		config:    config,
+		localAddr: localAddr,
+		url:       config.Urls[0],
+		keyCache:  NewKeyCache(128),
+		packets:   make(chan *Packet, 1024),
 	}, nil
 }
 
@@ -175,9 +181,6 @@ func (c *Client) Connect() error {
 		return nil
 	})
 
-	if localAddr := conn.LocalAddr(); localAddr != nil {
-		c.localAddr = localAddr.String()
-	}
 	c.conn = conn
 
 	c.ctx, c.cancel = context.WithCancel(context.Background())
@@ -189,7 +192,8 @@ func (c *Client) Connect() error {
 	}
 
 	log.Printf("[RelayClient] Handshake completed successfully")
-
+	go c.loopRead()
+	go c.loopWrite()
 	return nil
 }
 
@@ -306,12 +310,31 @@ func (c *Client) loopRead() {
 
 			switch m := msg.(type) {
 			case *RelayToClientDatagram:
-				c.readBuffer <- m
-			case *RelayToClientDatagramBatch:
-				c.readBuffer <- &RelayToClientDatagram{
-					SrcPublicKey: m.SrcPublicKey,
-					Datagrams:    m.Datagrams,
+				publicKey, err := crypto.PublicKeyFromBytes(m.SrcPublicKey[:])
+				if err != nil {
+					log.Printf("[RelayClient] Error parsing public key: %v", err)
+					continue
 				}
+				c.mu.Lock()
+				c.packets <- &Packet{
+					RemoteID: publicKey,
+					Data:     m.Datagrams.Contents,
+				}
+				c.mu.Unlock()
+			case *RelayToClientDatagramBatch:
+				publicKey, err := crypto.PublicKeyFromBytes(m.SrcPublicKey[:])
+				if err != nil {
+					log.Printf("[RelayClient] Error parsing public key: %v", err)
+					continue
+				}
+				c.mu.Lock()
+				c.packets <- &Packet{
+					RemoteID: publicKey,
+					Data:     m.Datagrams.Contents,
+				}
+				c.mu.Unlock()
+			case *Ping, *Pong:
+				c.latestPing.Store(time.Now().Unix())
 			default:
 				log.Printf("[RelayClient] Unexpected message type: %T", m)
 			}
@@ -326,42 +349,9 @@ func (c *Client) loopWrite() {
 			log.Printf("[RelayClient] Context canceled, closing connection")
 			return
 		case data := <-c.writeBuffer:
-			var tag postcard.Varint
-			err := postcard.Deserialize(data, &tag)
-			if err != nil {
-				log.Printf("[RelayClient] Error deserializing message type: %v", err)
-				continue
-			}
-
-			switch FrameType(tag) {
-			case FrameTypeClientToRelayDatagram:
-				msgData, err := EncodeClientToRelayDatagram(&ClientToRelayDatagram{
-					DestPublicKey: [32]byte(c.config.SecretKey.Public().Bytes()),
-					Datagrams:     NewDatagrams(data),
-				})
-				if err != nil {
-					log.Printf("[RelayClient] Error encoding message: %v", err)
-					return
-				}
-				if err := c.Send(msgData); err != nil {
-					log.Printf("[RelayClient] Error sending message: %v", err)
-					return
-				}
-			case FrameTypeClientToRelayDatagramBatch:
-				msgData, err := EncodeClientToRelayDatagramBatch(&ClientToRelayDatagramBatch{
-					DestPublicKey: [32]byte(c.config.SecretKey.Public().Bytes()),
-					Datagrams:     NewDatagrams(data),
-				})
-				if err != nil {
-					log.Printf("[RelayClient] Error encoding message: %v", err)
-					return
-				}
-				if err := c.Send(msgData); err != nil {
-					log.Printf("[RelayClient] Error sending message: %v", err)
-					return
-				}
-			default:
-				log.Printf("[RelayClient] Unknown message type: %d", tag)
+			if err := c.Send(data); err != nil {
+				log.Printf("[RelayClient] Error sending message: %v", err)
+				return
 			}
 		}
 	}
@@ -527,65 +517,6 @@ func (c *Client) buildWebSocketURL() (string, error) {
 	return parsedURL.String(), nil
 }
 
-func (c *Client) LocalAddr() string {
-	return c.localAddr
-}
-
 func (c *Client) URL() string {
 	return c.url
-}
-
-func (c *Client) Read(data []byte) (int, error) {
-	var ctx = c.ctx
-	timeout := time.Duration(0)
-	if !c.readDeadline.IsZero() {
-		timeout = time.Until(c.readDeadline)
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(c.ctx, timeout)
-
-		defer func() {
-			cancel()
-			c.readDeadline = time.Time{}
-		}()
-	}
-
-	if timeout > 0 {
-
-	}
-	select {
-	case <-ctx.Done():
-		return 0, ctx.Err()
-	case msg := <-c.readBuffer:
-		return copy(data, msg.Datagrams.Contents), nil
-	}
-}
-
-func (c *Client) Write(data []byte) (int, error) {
-	var ctx = c.ctx
-	timeout := time.Duration(0)
-	if !c.writeDeadline.IsZero() {
-		timeout = time.Until(c.writeDeadline)
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(c.ctx, timeout)
-		defer func() {
-			cancel()
-			c.writeDeadline = time.Time{}
-		}()
-	}
-	select {
-	case <-ctx.Done():
-		return 0, ctx.Err()
-	case c.writeBuffer <- data:
-		return len(data), nil
-	}
-}
-
-func (c *Client) SetWriteDeadline(t time.Time) error {
-	c.writeDeadline = t
-	return nil
-}
-
-func (c *Client) SetReadDeadline(t time.Time) error {
-	c.readDeadline = t
-	return nil
 }

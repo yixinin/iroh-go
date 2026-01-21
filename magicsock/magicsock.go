@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yixinin/iroh-go"
 	"github.com/yixinin/iroh-go/common"
 	"github.com/yixinin/iroh-go/crypto"
 	"github.com/yixinin/iroh-go/discovery"
@@ -47,21 +48,16 @@ type EndpointAddr struct {
 }
 
 type Connection struct {
-	quicConn  quic.Connection
-	relayConn *relay.RelayConnection
-	remoteId  *crypto.EndpointId
-	alpn      []byte
+	quicConn quic.Connection
+	remoteId *crypto.EndpointId
+	alpn     []byte
 }
 
 func (c *Connection) Conn() quic.Connection {
 	if c.quicConn != nil {
 		return c.quicConn
 	}
-	return c.relayConn
-}
-
-func (c *Connection) Relay() *relay.RelayConnection {
-	return c.relayConn
+	return nil
 }
 
 func (c *Connection) RemoteId() *crypto.EndpointId {
@@ -122,7 +118,7 @@ func NewMagicSock(opts Options) (*MagicSock, error) {
 		opts.SecretKey = crypto.NewSecretKey()
 	}
 	if len(opts.ALPNs) == 0 {
-		opts.ALPNs = [][]byte{[]byte(DefaultALPN)}
+		opts.ALPNs = [][]byte{[]byte("iroh3")}
 	}
 	if opts.Discovery == nil {
 		opts.Discovery = discovery.DefaultDiscovery()
@@ -152,7 +148,7 @@ func NewMagicSock(opts Options) (*MagicSock, error) {
 			log.Printf("[MagicSock] Attempting to connect to relay: %s", relayURL)
 
 			config := relay.NewConfig([]string{relayURL}, opts.SecretKey)
-			client, err := relay.NewClient(config)
+			client, err := relay.NewClient(config, opts.SecretKey.Public())
 			if err != nil {
 				log.Printf("[MagicSock] Failed to create relay client for %s: %v", relayURL, err)
 				continue
@@ -630,7 +626,6 @@ func (ms *MagicSock) tryRelayConnection(ctx context.Context, addr EndpointAddr, 
 		log.Printf("[MagicSock] Attempting relay connection via client %d", i+1)
 
 		relayConn := relay.NewRelayConnection(relayClient, addr.Id)
-		relayConn.Start()
 
 		log.Printf("[MagicSock] Relay connection established via %s", relayClient.URL())
 
@@ -646,11 +641,20 @@ func (ms *MagicSock) tryRelayConnection(ctx context.Context, addr EndpointAddr, 
 
 		actor.SetRelayConnection(relayConn)
 
+		quicConfig := &quic.Config{
+			MaxIdleTimeout:  defaultKeepAlive,
+			KeepAlivePeriod: defaultKeepAlive,
+		}
+		tlsConfig := generateClientTLSConfig(ms.secretKey, [][]byte{alpn}, addr.Id)
+
+		conn, err := NewQuicConnection(relayClient, iroh.NewAddr(addr.Id), tlsConfig, quicConfig)
+		if err != nil {
+			return nil, err
+		}
 		return &Connection{
-			quicConn:  nil,
-			remoteId:  addr.Id,
-			alpn:      alpn,
-			relayConn: relayConn,
+			quicConn: conn,
+			remoteId: addr.Id,
+			alpn:     alpn,
 		}, nil
 	}
 
@@ -699,10 +703,13 @@ func (ms *MagicSock) dialQUIC(ctx context.Context, addr string, remoteId *crypto
 
 func (ms *MagicSock) Accept() (<-chan *Incoming, error) {
 	ch := make(chan *Incoming)
+	defer close(ch)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	go func() {
 		for {
-			conn, err := ms.endpoint.Accept(ms.ctx)
+			conn, err := ms.endpoint.Accept(ctx)
 			if err != nil {
 				break
 			}
@@ -711,28 +718,38 @@ func (ms *MagicSock) Accept() (<-chan *Incoming, error) {
 				conn:     conn,
 				remoteId: ms.extractEndpointId(conn),
 			}
-			ch <- incoming
+			select {
+			case <-ctx.Done():
+				return
+			case ch <- incoming:
+			}
 		}
-		close(ch)
 	}()
 
 	go func() {
 		for {
-			for _, rc := range ms.relayClients {
-				relayConn := relay.NewRelayConnection(rc, ms.id)
-				stream, err := relayConn.AcceptStream(context.Background())
-				if err != nil {
-					break
+			select {
+			case <-ctx.Done():
+				return
+			default:
+				for _, rc := range ms.relayClients {
+					relayConn := relay.NewRelayConnection(rc, nil)
+					if relayConn != nil && relayConn.RemoteId() != nil {
+						incoming := &Incoming{
+							conn:     relayConn,
+							remoteId: relayConn.RemoteId(),
+						}
+						ch <- incoming
+						select {
+						case <-ctx.Done():
+							return
+						case ch <- incoming:
+						}
+					}
 				}
-				incoming := &Incoming{
-					conn:     stream,
-					remoteId: ms.extractEndpointId(stream),
-				}
-				ch <- incoming
+				time.Sleep(1 * time.Millisecond)
 			}
-
 		}
-		close(ch)
 	}()
 
 	return ch, nil

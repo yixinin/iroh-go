@@ -2,262 +2,145 @@ package relay
 
 import (
 	"context"
-	"encoding/binary"
-	"io"
+	"fmt"
 	"net"
 	"sync"
 	"time"
 
-	"github.com/quic-go/quic-go"
+	"github.com/yixinin/iroh-go"
 	"github.com/yixinin/iroh-go/crypto"
+	"github.com/yixinin/postcard-go/postcard"
 )
 
 type RelayConnection struct {
-	client    *Client
-	remoteId  *crypto.EndpointId
-	streams   sync.Map
-	streamId  uint64
-	mu        sync.RWMutex
-	closed    bool
-	closeChan chan struct{}
+	remoteID *crypto.EndpointId
+	recvChan chan []byte
+	sendChan chan []byte
 
-	accepts sync.Map
+	readBuffer []byte
+	mu         sync.Mutex
+
+	ctx    context.Context
+	cancel context.CancelFunc
 }
 
-func NewRelayConnection(client *Client, remoteId *crypto.EndpointId) *RelayConnection {
-	return &RelayConnection{
-		client:    client,
-		remoteId:  remoteId,
-		streams:   sync.Map{},
-		streamId:  0,
-		closeChan: make(chan struct{}),
+func NewRelayConnection(client *Client, remoteID *crypto.EndpointId) *RelayConnection {
+	rc := &RelayConnection{
+		remoteID: remoteID,
+		recvChan: make(chan []byte, 1024),
+		sendChan: client.writeBuffer,
 	}
+
+	go rc.loopRead()
+	return rc
 }
 
-func (rc *RelayConnection) Start() {
-	go rc.readLoop()
+func (rc *RelayConnection) RemoteID() *crypto.EndpointId {
+	if rc.remoteID != nil {
+		return rc.remoteID
+	}
+	return rc.remoteID
 }
 
-func (rc *RelayConnection) readLoop() {
-	buf := make([]byte, 65536)
+func (rc *RelayConnection) loopRead() error {
+	for data := range rc.recvChan {
+		rc.mu.Lock()
+		rc.readBuffer = append(rc.readBuffer, data...)
+		rc.mu.Unlock()
+	}
+	return nil
+}
 
-	for {
-		select {
-		case <-rc.closeChan:
-			return
-		default:
-			n, err := rc.client.Read(buf)
-			if err != nil {
-				return
-			}
+func (rc *RelayConnection) Read(b []byte) (int, error) {
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
 
-			rc.handleDatagram(buf[:n])
+	n := copy(b, rc.readBuffer)
+	rc.readBuffer = rc.readBuffer[n:]
+	return n, nil
+}
+
+func (rc *RelayConnection) Write(b []byte) (int, error) {
+	n := len(b)
+	var segmentSize uint16
+	if n > 0 {
+		segmentSize = uint16(n)
+	}
+	var publicKey [32]byte
+	copy(publicKey[:], rc.remoteID.PublicKey())
+	var frameType postcard.Varint
+	if err := postcard.Deserialize(b, &frameType); err != nil {
+		return 0, err
+	}
+	var data []byte
+	var err error
+	switch FrameType(frameType) {
+	case FrameTypeClientToRelayDatagramBatch:
+		msg := &ClientToRelayDatagramBatch{
+			DestPublicKey: publicKey,
+			Datagrams:     &Datagrams{Contents: b, SegmentSize: &segmentSize},
 		}
-	}
-}
+		data, err = EncodeClientToRelayDatagramBatch(msg)
 
-func (rc *RelayConnection) handleDatagram(data []byte) {
-	msg, err := ParseRelayMessage(data)
+	case FrameTypeClientToRelayDatagram:
+		msg := &ClientToRelayDatagram{
+			DestPublicKey: publicKey,
+			Datagrams:     &Datagrams{Contents: b, SegmentSize: &segmentSize},
+		}
+		data, err = EncodeClientToRelayDatagram(msg)
+	}
+
 	if err != nil {
-		return
+		return 0, err
+	}
+	if len(data) == 0 {
+		return 0, nil
 	}
 
-	switch m := msg.(type) {
-	case *RelayToClientDatagram:
-		rc.routeToStream(m.Datagrams.Contents)
-	case *RelayToClientDatagramBatch:
-		rc.routeToStream(m.Datagrams.Contents)
-	}
-}
-
-func (rc *RelayConnection) routeToStream(data []byte) {
-	if len(data) < 8 {
-		return
-	}
-
-	streamId := binary.BigEndian.Uint64(data[:8])
-	payload := data[8:]
-
-	if stream, ok := rc.streams.Load(streamId); ok {
-		if relayStream, ok := stream.(*RelayStream); ok {
-			select {
-			case relayStream.readChan <- payload:
-			case <-relayStream.closeChan:
-			}
-		}
-	}
-	if stream, ok := rc.accepts.Load(streamId); ok {
-		if relayStream, ok := stream.(*RelayStream); ok {
-			select {
-			case relayStream.readChan <- payload:
-			case <-relayStream.closeChan:
-			}
-		}
-	}
-}
-
-func (rc *RelayConnection) AcceptStream(ctx context.Context) (quic.Stream, error) {
-	tk := time.NewTicker(10 * time.Millisecond)
-	for range tk.C {
-		var stream *RelayStream
-		rc.accepts.Range(func(key, value any) bool {
-			if relayStream, ok := value.(*RelayStream); ok {
-				stream = relayStream
-				return false
-			}
-			return true
-		})
-		if stream != nil {
-			rc.accepts.Delete(stream.streamId)
-			rc.streams.Store(stream.streamId, stream)
-			return stream, nil
-		}
-	}
-	panic("dead code")
-}
-
-func (rc *RelayConnection) AcceptUniStream(ctx context.Context) (quic.ReceiveStream, error) {
-	return nil, io.EOF
-}
-
-func (rc *RelayConnection) OpenStream() (quic.Stream, error) {
-	return rc.OpenStreamSync(context.Background())
-}
-
-func (rc *RelayConnection) OpenStreamSync(ctx context.Context) (quic.Stream, error) {
 	rc.mu.Lock()
 	defer rc.mu.Unlock()
 
-	if rc.closed {
-		return nil, io.ErrClosedPipe
-	}
-
-	rc.streamId++
-	streamId := rc.streamId
-
-	stream := NewRelayStream(rc, streamId, true)
-	rc.streams.Store(streamId, stream)
-
-	return stream, nil
-}
-
-func (rc *RelayConnection) OpenUniStream() (quic.SendStream, error) {
-	return rc.OpenUniStreamSync(context.Background())
-}
-
-func (rc *RelayConnection) OpenUniStreamSync(ctx context.Context) (quic.SendStream, error) {
-	rc.mu.Lock()
-	defer rc.mu.Unlock()
-
-	if rc.closed {
-		return nil, io.ErrClosedPipe
-	}
-
-	rc.streamId++
-	streamId := rc.streamId
-
-	stream := NewRelayStream(rc, streamId, false)
-	rc.streams.Store(streamId, stream)
-
-	return stream, nil
-}
-
-func (rc *RelayConnection) LocalAddr() net.Addr {
-	return &net.UDPAddr{
-		IP:   net.IPv4(127, 0, 0, 1),
-		Port: 0,
-	}
-}
-
-func (rc *RelayConnection) RemoteAddr() net.Addr {
-	return &net.UDPAddr{
-		IP:   net.IPv4(127, 0, 0, 1),
-		Port: 0,
-	}
-}
-
-func (rc *RelayConnection) CloseWithError(errorCode quic.ApplicationErrorCode, reason string) error {
-	rc.mu.Lock()
-	defer rc.mu.Unlock()
-
-	if rc.closed {
-		return nil
-	}
-
-	rc.closed = true
-	close(rc.closeChan)
-
-	rc.streams.Range(func(key, value interface{}) bool {
-		if stream, ok := value.(*RelayStream); ok {
-			stream.Close()
-		}
-		return true
-	})
-
-	return nil
-}
-
-func (rc *RelayConnection) Close() error {
-	return rc.CloseWithError(0, "")
-}
-
-func (rc *RelayConnection) Context() context.Context {
-	return context.Background()
-}
-
-func (rc *RelayConnection) ConnectionState() quic.ConnectionState {
-	return quic.ConnectionState{}
-}
-
-func (rc *RelayConnection) GetTLSConnectionState() any {
-	return nil
-}
-
-func (rc *RelayConnection) SendMessage(message []byte) error {
-	return nil
-}
-
-func (rc *RelayConnection) SendDatagram(data []byte) error {
-	rc.mu.RLock()
-	defer rc.mu.RUnlock()
-
-	if rc.closed {
-		return io.ErrClosedPipe
-	}
-
-	return rc.client.SendDatagram((*crypto.PublicKey)(rc.remoteId), Ce, data)
-}
-
-func (rc *RelayConnection) ReceiveDatagram(ctx context.Context) ([]byte, error) {
 	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case <-rc.closeChan:
-		return nil, io.EOF
+	case <-rc.ctx.Done():
+		return 0, rc.ctx.Err()
+	case rc.sendChan <- data:
 	}
+	return n, nil
 }
 
-func (rc *RelayConnection) MaxDatagramSize() int {
-	return 1350
+func (c *Client) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
+	packet := <-c.packets
+	n = copy(p, packet.Data)
+	return n, iroh.NewAddr(packet.RemoteID), nil
 }
 
-func (rc *RelayConnection) SetReadDeadline(t time.Time) error {
+func (rc *Client) WriteTo(p []byte, addr net.Addr) (n int, err error) {
+	if addr, ok := addr.(*iroh.Addr); ok {
+		err := rc.SendDatagram(addr.PublicKey(), Ce, p)
+		if err != nil {
+			return 0, err
+		}
+		return len(p), nil
+	}
+	return 0, fmt.Errorf("invalid address type")
+}
+
+func (rc *Client) LocalAddr() net.Addr {
+	return iroh.NewAddr(rc.localAddr)
+}
+
+func (rc *Client) SetDeadline(t time.Time) error {
+	rc.readDeadline = t
+	rc.writeDeadline = t
 	return nil
 }
 
-func (rc *RelayConnection) SetWriteDeadline(t time.Time) error {
+func (rc *Client) SetReadDeadline(t time.Time) error {
+	rc.readDeadline = t
 	return nil
 }
 
-func (rc *RelayConnection) ConnectionID() quic.ConnectionID {
-	return quic.ConnectionID{}
-}
-
-func (rc *RelayConnection) ReceiveMessage(ctx context.Context) ([]byte, error) {
-	buf := make([]byte, 65536)
-	n, err := rc.client.Read(buf)
-	if err != nil {
-		return nil, err
-	}
-	return buf[:n], nil
+func (rc *Client) SetWriteDeadline(t time.Time) error {
+	rc.writeDeadline = t
+	return nil
 }

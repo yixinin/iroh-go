@@ -32,7 +32,7 @@ const (
 	// DefaultRelayMode 默认中继模式
 	DefaultRelayMode = common.RelayModeDefault
 	// DefaultALPN 默认 ALPN 协议
-	DefaultALPN = "h3"
+	DefaultALPN = "iroh3"
 )
 
 type Options struct {
@@ -87,6 +87,7 @@ func (i *Incoming) ALPN() []byte {
 }
 
 type MagicSock struct {
+	alpn         []byte
 	endpoint     *quic.Listener
 	remoteMap    *RemoteMap
 	transports   *Transports
@@ -95,8 +96,6 @@ type MagicSock struct {
 	id           *crypto.EndpointId
 	secretKey    *crypto.SecretKey
 	discovery    discovery.Discovery
-
-	customPacketConn *CustomPacketConn
 
 	remoteStates   map[string]*RemoteStateActor
 	remoteStatesMu sync.RWMutex
@@ -118,7 +117,7 @@ func NewMagicSock(opts Options) (*MagicSock, error) {
 		opts.SecretKey = crypto.NewSecretKey()
 	}
 	if len(opts.ALPNs) == 0 {
-		opts.ALPNs = [][]byte{[]byte("iroh3")}
+		opts.ALPNs = [][]byte{[]byte(DefaultALPN)}
 	}
 	if opts.Discovery == nil {
 		opts.Discovery = discovery.DefaultDiscovery()
@@ -201,8 +200,6 @@ func NewMagicSock(opts Options) (*MagicSock, error) {
 
 	relayMappedAddrs := NewAddrMap()
 
-	customPacketConn := NewCustomPacketConn(id)
-
 	ms := &MagicSock{
 		endpoint:         listener,
 		remoteMap:        remoteMap,
@@ -212,27 +209,12 @@ func NewMagicSock(opts Options) (*MagicSock, error) {
 		id:               id,
 		secretKey:        opts.SecretKey,
 		discovery:        opts.Discovery,
-		customPacketConn: customPacketConn,
 		remoteStates:     make(map[string]*RemoteStateActor),
 		localDirectAddrs: localDirectAddrs,
 		relayMappedAddrs: relayMappedAddrs,
 		ctx:              ctx,
 		cancel:           cancel,
 	}
-
-	for _, transport := range transports.IPTransports() {
-		if ipTransport, ok := transport.(*TransportIp); ok {
-			if ipTransport.conn != nil {
-				customPacketConn.SetIPv4Conn(ipTransport.conn)
-			}
-		}
-	}
-
-	if len(relayClients) > 0 {
-		customPacketConn.SetRelayConn(relayClients[0])
-	}
-
-	customPacketConn.Start()
 
 	ms.startBackgroundTasks()
 
@@ -625,8 +607,6 @@ func (ms *MagicSock) tryRelayConnection(ctx context.Context, addr EndpointAddr, 
 	for i, relayClient := range ms.relayClients {
 		log.Printf("[MagicSock] Attempting relay connection via client %d", i+1)
 
-		relayConn := relay.NewRelayConnection(relayClient, addr.Id)
-
 		log.Printf("[MagicSock] Relay connection established via %s", relayClient.URL())
 
 		ms.remoteStatesMu.Lock()
@@ -639,7 +619,7 @@ func (ms *MagicSock) tryRelayConnection(ctx context.Context, addr EndpointAddr, 
 		}
 		ms.remoteStatesMu.Unlock()
 
-		actor.SetRelayConnection(relayConn)
+		actor.SetRelayConnection(relayClient)
 
 		quicConfig := &quic.Config{
 			MaxIdleTimeout:  defaultKeepAlive,
@@ -647,7 +627,7 @@ func (ms *MagicSock) tryRelayConnection(ctx context.Context, addr EndpointAddr, 
 		}
 		tlsConfig := generateClientTLSConfig(ms.secretKey, [][]byte{alpn}, addr.Id)
 
-		conn, err := NewQuicConnection(relayClient, iroh.NewAddr(addr.Id), tlsConfig, quicConfig)
+		conn, err := NewQuicConnection(relayClient, iroh.NewAddr(addr.Id, nil), tlsConfig, quicConfig)
 		if err != nil {
 			return nil, err
 		}
@@ -727,29 +707,37 @@ func (ms *MagicSock) Accept() (<-chan *Incoming, error) {
 	}()
 
 	go func() {
-		for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+		for _, rc := range ms.relayClients {
+			if !rc.Accept(ms.id) {
+				continue
+			}
+			quicConfig := &quic.Config{
+				MaxIdleTimeout:  defaultKeepAlive,
+				KeepAlivePeriod: defaultKeepAlive,
+			}
+			tlsConfig := generateClientTLSConfig(ms.secretKey, [][]byte{ms.alpn}, rc.RemoteID())
+			conn, err := NewQuicConnection(rc, rc.LocalAddr(), tlsConfig, quicConfig)
+			if err != nil {
+				log.Printf("[MagicSock] Failed to connect to relay client %s: %v", rc.URL(), err)
+				continue
+			}
+			log.Printf("[MagicSock] Relay connection established via %s", rc.URL())
+			incoming := &Incoming{
+				conn:     conn,
+				remoteId: ms.extractEndpointId(conn),
+			}
 			select {
 			case <-ctx.Done():
 				return
-			default:
-				for _, rc := range ms.relayClients {
-					relayConn := relay.NewRelayConnection(rc, nil)
-					if relayConn != nil && relayConn.RemoteId() != nil {
-						incoming := &Incoming{
-							conn:     relayConn,
-							remoteId: relayConn.RemoteId(),
-						}
-						ch <- incoming
-						select {
-						case <-ctx.Done():
-							return
-						case ch <- incoming:
-						}
-					}
-				}
-				time.Sleep(1 * time.Millisecond)
+			case ch <- incoming:
 			}
 		}
+		time.Sleep(10 * time.Millisecond)
 	}()
 
 	return ch, nil

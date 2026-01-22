@@ -4,129 +4,73 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"sync"
 	"time"
 
 	"github.com/yixinin/iroh-go"
 	"github.com/yixinin/iroh-go/crypto"
-	"github.com/yixinin/postcard-go/postcard"
 )
 
-type RelayConnection struct {
-	remoteID *crypto.EndpointId
-	recvChan chan []byte
-	sendChan chan []byte
-
-	readBuffer []byte
-	mu         sync.Mutex
-
-	ctx    context.Context
-	cancel context.CancelFunc
-}
-
-func NewRelayConnection(client *Client, remoteID *crypto.EndpointId) *RelayConnection {
-	rc := &RelayConnection{
-		remoteID: remoteID,
-		recvChan: make(chan []byte, 1024),
-		sendChan: client.writeBuffer,
-	}
-
-	go rc.loopRead()
-	return rc
-}
-
-func (rc *RelayConnection) RemoteID() *crypto.EndpointId {
-	if rc.remoteID != nil {
-		return rc.remoteID
-	}
-	return rc.remoteID
-}
-
-func (rc *RelayConnection) loopRead() error {
-	for data := range rc.recvChan {
-		rc.mu.Lock()
-		rc.readBuffer = append(rc.readBuffer, data...)
-		rc.mu.Unlock()
-	}
-	return nil
-}
-
-func (rc *RelayConnection) Read(b []byte) (int, error) {
-	rc.mu.Lock()
-	defer rc.mu.Unlock()
-
-	n := copy(b, rc.readBuffer)
-	rc.readBuffer = rc.readBuffer[n:]
-	return n, nil
-}
-
-func (rc *RelayConnection) Write(b []byte) (int, error) {
-	n := len(b)
-	var segmentSize uint16
-	if n > 0 {
-		segmentSize = uint16(n)
-	}
-	var publicKey [32]byte
-	copy(publicKey[:], rc.remoteID.PublicKey())
-	var frameType postcard.Varint
-	if err := postcard.Deserialize(b, &frameType); err != nil {
-		return 0, err
-	}
-	var data []byte
-	var err error
-	switch FrameType(frameType) {
-	case FrameTypeClientToRelayDatagramBatch:
-		msg := &ClientToRelayDatagramBatch{
-			DestPublicKey: publicKey,
-			Datagrams:     &Datagrams{Contents: b, SegmentSize: &segmentSize},
-		}
-		data, err = EncodeClientToRelayDatagramBatch(msg)
-
-	case FrameTypeClientToRelayDatagram:
-		msg := &ClientToRelayDatagram{
-			DestPublicKey: publicKey,
-			Datagrams:     &Datagrams{Contents: b, SegmentSize: &segmentSize},
-		}
-		data, err = EncodeClientToRelayDatagram(msg)
-	}
-
-	if err != nil {
-		return 0, err
-	}
-	if len(data) == 0 {
-		return 0, nil
-	}
-
-	rc.mu.Lock()
-	defer rc.mu.Unlock()
-
-	select {
-	case <-rc.ctx.Done():
-		return 0, rc.ctx.Err()
-	case rc.sendChan <- data:
-	}
-	return n, nil
-}
-
 func (c *Client) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
-	packet := <-c.packets
-	n = copy(p, packet.Data)
-	return n, iroh.NewAddr(packet.RemoteID), nil
+	ctx := context.Background()
+	var timeout = 0 * time.Second
+	if !c.readDeadline.IsZero() {
+		timeout = time.Until(c.readDeadline)
+		if timeout <= 0 {
+			return 0, nil, context.DeadlineExceeded
+		}
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+	select {
+	case <-ctx.Done():
+		return 0, nil, ctx.Err()
+	case packet := <-c.packets:
+		n = copy(p, packet.Data)
+		return n, iroh.NewAddr(packet.RemoteID, nil), nil
+	}
 }
 
 func (rc *Client) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 	if addr, ok := addr.(*iroh.Addr); ok {
-		err := rc.SendDatagram(addr.PublicKey(), Ce, p)
-		if err != nil {
-			return 0, err
+		ctx := context.Background()
+		var timeout = 0 * time.Second
+		if !rc.writeDeadline.IsZero() {
+			timeout = time.Until(rc.writeDeadline)
+			if timeout <= 0 {
+				return 0, context.DeadlineExceeded
+			}
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, timeout)
+			defer cancel()
 		}
-		return len(p), nil
+		var errChan = make(chan error)
+		var dataSize = len(p)
+		go func() {
+			defer close(errChan)
+			err := rc.SendDatagram(addr.PublicKey(), Ce, p)
+			errChan <- err
+		}()
+
+		select {
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		case err := <-errChan:
+			if err != nil {
+				return 0, err
+			}
+		}
+		return dataSize, nil
 	}
 	return 0, fmt.Errorf("invalid address type")
 }
 
+func (rc *Client) RemoteID() *crypto.EndpointId {
+	return rc.endpointID
+}
+
 func (rc *Client) LocalAddr() net.Addr {
-	return iroh.NewAddr(rc.localAddr)
+	return iroh.NewAddr(rc.endpointID, nil)
 }
 
 func (rc *Client) SetDeadline(t time.Time) error {

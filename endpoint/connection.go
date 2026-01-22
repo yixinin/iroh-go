@@ -14,7 +14,7 @@ import (
 // Connection 表示与远程端点的连接
 type Connection struct {
 	conn     quic.Connection
-	relay    *relay.RelayConnection
+	relay    *relay.Client
 	remoteId *crypto.EndpointId
 	alpn     []byte
 }
@@ -29,7 +29,7 @@ func NewConnection(conn quic.Connection, remoteId *crypto.EndpointId, alpn []byt
 }
 
 // NewRelayConnection 创建新的 relay 连接
-func NewRelayConnection(relayConn *relay.RelayConnection, remoteId *crypto.EndpointId, alpn []byte) *Connection {
+func NewRelayConnection(relayConn *relay.Client, remoteId *crypto.EndpointId, alpn []byte) *Connection {
 	return &Connection{
 		relay:    relayConn,
 		remoteId: remoteId,

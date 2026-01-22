@@ -71,20 +71,30 @@ type Client struct {
 	conn       *websocket.Conn
 	config     *Config
 	url        string
-	localAddr  *crypto.EndpointId
+	endpointID *crypto.EndpointId
 	keyCache   *KeyCache
 	latestPing atomic.Int64
 
 	packets chan *Packet
 	mu      sync.Mutex
 
-	writeBuffer chan []byte
-
 	readDeadline  time.Time
 	writeDeadline time.Time
 
+	accept map[*crypto.EndpointId]bool
+
 	ctx    context.Context
 	cancel context.CancelFunc
+}
+
+func (c *Client) Accept(remoteID *crypto.EndpointId) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if b, ok := c.accept[remoteID]; ok && !b {
+		c.accept[remoteID] = true
+		return true
+	}
+	return false
 }
 
 type Config struct {
@@ -105,17 +115,18 @@ func (c *Config) WithProxyURL(proxyURL string) *Config {
 	return c
 }
 
-func NewClient(config *Config, localAddr *crypto.EndpointId) (*Client, error) {
+func NewClient(config *Config, endpointID *crypto.EndpointId) (*Client, error) {
 	if len(config.Urls) == 0 {
 		return nil, fmt.Errorf("no relay URLs provided")
 	}
 
 	return &Client{
-		config:    config,
-		localAddr: localAddr,
-		url:       config.Urls[0],
-		keyCache:  NewKeyCache(128),
-		packets:   make(chan *Packet, 1024),
+		config:     config,
+		endpointID: endpointID,
+		url:        config.Urls[0],
+		keyCache:   NewKeyCache(128),
+		packets:    make(chan *Packet, 1024),
+		accept:     make(map[*crypto.EndpointId]bool),
 	}, nil
 }
 
@@ -193,7 +204,6 @@ func (c *Client) Connect() error {
 
 	log.Printf("[RelayClient] Handshake completed successfully")
 	go c.loopRead()
-	go c.loopWrite()
 	return nil
 }
 
@@ -320,6 +330,9 @@ func (c *Client) loopRead() {
 					RemoteID: publicKey,
 					Data:     m.Datagrams.Contents,
 				}
+				if _, ok := c.accept[publicKey]; !ok {
+					c.accept[publicKey] = false
+				}
 				c.mu.Unlock()
 			case *RelayToClientDatagramBatch:
 				publicKey, err := crypto.PublicKeyFromBytes(m.SrcPublicKey[:])
@@ -332,26 +345,14 @@ func (c *Client) loopRead() {
 					RemoteID: publicKey,
 					Data:     m.Datagrams.Contents,
 				}
+				if _, ok := c.accept[publicKey]; !ok {
+					c.accept[publicKey] = false
+				}
 				c.mu.Unlock()
 			case *Ping, *Pong:
 				c.latestPing.Store(time.Now().Unix())
 			default:
 				log.Printf("[RelayClient] Unexpected message type: %T", m)
-			}
-		}
-	}
-}
-
-func (c *Client) loopWrite() {
-	for {
-		select {
-		case <-c.ctx.Done():
-			log.Printf("[RelayClient] Context canceled, closing connection")
-			return
-		case data := <-c.writeBuffer:
-			if err := c.Send(data); err != nil {
-				log.Printf("[RelayClient] Error sending message: %v", err)
-				return
 			}
 		}
 	}

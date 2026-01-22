@@ -14,7 +14,7 @@ const (
 	// DefaultRelayMode 默认中继模式
 	DefaultRelayMode = common.RelayModeDefault
 	// DefaultALPN 默认 ALPN 协议
-	DefaultALPN = "h3"
+	DefaultALPN = "iroh3"
 	// DefaultInsecureSkipCertVerify 默认是否跳过证书验证
 	DefaultInsecureSkipCertVerify = false
 )
@@ -96,12 +96,6 @@ func (e *Endpoint) Connect(ctx context.Context, addr EndpointAddr, alpn []byte) 
 	msConn, err := e.msock.Connect(msAddr, alpn)
 	if err != nil {
 		return nil, err
-	}
-
-	// 检查是否为 relay 连接
-	if msConn.Conn() == nil {
-		// 返回 relay 连接
-		return NewRelayConnection(msConn.Relay(), msConn.RemoteId(), msConn.ALPN()), nil
 	}
 
 	// 转换为endpoint.Connection

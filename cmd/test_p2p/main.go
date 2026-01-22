@@ -37,7 +37,7 @@ func runNode1() {
 	opts := magicsock.Options{
 		RelayMode: common.RelayModeDefault,
 		SecretKey: crypto.NewSecretKey(),
-		ALPNs:     [][]byte{[]byte("iroh3")},
+		ALPNs:     [][]byte{[]byte(magicsock.DefaultALPN)},
 		Discovery: discovery.DefaultDiscovery(),
 	}
 

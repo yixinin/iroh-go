@@ -27,7 +27,7 @@ func main() {
 	secretKey := crypto.NewSecretKey()
 	// 创建 endpoint（使用默认值）
 	ep, err := endpoint.NewEndpoint(endpoint.Options{
-		ALPNs:     [][]byte{[]byte("iroh3")},
+		ALPNs:     [][]byte{[]byte(endpoint.DefaultALPN)},
 		SecretKey: secretKey,
 	})
 	if err != nil {
